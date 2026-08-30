@@ -7,6 +7,7 @@
 
 #include "fastatoms/optimize/bfgs.hpp"
 #include "fastatoms/optimize/conjugate_gradient.hpp"
+#include "fastatoms/optimize/fire.hpp"
 #include "fastatoms/optimize/lbfgs.hpp"
 #include "fastatoms/optimize/steepest_descent.hpp"
 
@@ -41,6 +42,7 @@ Registry& registry() {
         add("cg", [](const Value& p) { return std::make_shared<ConjugateGradient>(p); });
         add("bfgs", [](const Value& p) { return std::make_shared<BFGS>(p); });
         add("lbfgs", [](const Value& p) { return std::make_shared<LBFGS>(p); });
+        add("fire", [](const Value& p) { return std::make_shared<Fire>(p); });
 
         // Aliases share a factory but are not listed separately.
         for (const char* alias : {"steepest_descent", "steepestdescent", "gd", "gradient_descent"}) {

@@ -364,7 +364,7 @@ def test_every_integrator_enforces_them(integrator):
 # Input files
 # --------------------------------------------------------------------------
 def test_yaml_selects_the_model():
-    deck = fa.read_string("""
+    deck = fa.read_input_string("""
 structure:
   cell: {a: 9.8654, b: 9.8654, c: 9.8654}
   pbc: true

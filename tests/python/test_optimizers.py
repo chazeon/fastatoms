@@ -341,11 +341,12 @@ def test_repr_and_parameters():
 # Registry and the YAML path
 # --------------------------------------------------------------------------
 def test_registry():
-    assert set(fa.registered_optimizers()) == {"sd", "cg", "bfgs", "lbfgs"}
+    assert set(fa.registered_optimizers()) == {"sd", "cg", "bfgs", "lbfgs", "fire"}
     assert fa.make_optimizer("BFGS").name == "bfgs"
     assert fa.make_optimizer("Steepest-Descent").name == "sd"
     assert fa.make_optimizer("L-BFGS").name == "lbfgs"
     assert fa.make_optimizer("conjugate_gradient").name == "cg"
+    assert fa.make_optimizer("FIRE").name == "fire"
     with pytest.raises(fa.OptimizerError):
         fa.make_optimizer("newton")
 
@@ -385,7 +386,7 @@ simulation:
 
 
 def test_optimizer_comes_from_the_input_file():
-    deck = fa.read_string(RELAX_INPUT)
+    deck = fa.read_input_string(RELAX_INPUT)
     assert deck.simulation.optimizer.algorithm == "lbfgs"
     assert deck.simulation.optimizer.fmax == 0.001
     assert deck.simulation.optimizer.relax_cell is True
@@ -403,7 +404,7 @@ def test_optimizer_comes_from_the_input_file():
 
 
 def test_full_yaml_relaxation():
-    deck = fa.read_string(RELAX_INPUT)
+    deck = fa.read_input_string(RELAX_INPUT)
     atoms = deck.atoms
     atoms.calc = deck.make_calculator()
     result = deck.make_optimizer().run(atoms)

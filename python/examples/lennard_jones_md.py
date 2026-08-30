@@ -102,7 +102,7 @@ def velocity_verlet(atoms: fa.Atoms, calculator, timestep: float, steps: int,
 
 def main(argv: list[str]) -> int:
     path = argv[1] if len(argv) > 1 else "examples/argon.yaml"
-    deck = fa.read(path)
+    deck = fa.read_input(path)
 
     # Sections FastAtoms does not interpret are still available verbatim.
     repetitions = deck.simulation.raw.get("supercell", [1, 1, 1])

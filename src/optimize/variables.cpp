@@ -19,6 +19,19 @@ Calculator& require_calculator(Atoms& atoms) {
 }
 
 /// Run the calculator and hand back the energy plus the raw results.
+/// The forces as *motion* sees them: what the model produced, with whatever
+/// the structure's constraints forbid projected out.
+///
+/// The calculator's own `Results` deliberately stay raw - they are the model's
+/// output, and reading them back should show what the model said. Anything
+/// that decides where an atom goes next has to use this instead, which is why
+/// it is a named function rather than two open-coded copies.
+std::vector<double> movable_forces(const Atoms& atoms, const Results& results) {
+    std::vector<double> forces = results.forces;
+    atoms.adjust_forces(forces);
+    return forces;
+}
+
 const Results& evaluate_with(Atoms& atoms, const std::vector<Property>& properties) {
     Calculator& calculator = require_calculator(atoms);
     calculator.calculate(atoms, properties);
@@ -39,7 +52,12 @@ std::vector<double> AtomicVariables::pack(const Atoms& atoms) const {
 }
 
 void AtomicVariables::unpack(const std::vector<double>& x, Atoms& atoms) const {
-    atoms.set_positions(x);
+    // `move_to` rather than `set_positions`: an optimizer proposing a step is
+    // moving the atoms, and the constraints get to say how far. The gradient
+    // is already projected - it comes from `get_forces` - but that alone is
+    // not enough, because BFGS and L-BFGS multiply it by an approximate
+    // inverse Hessian that can put a component back into a frozen direction.
+    atoms.move_to(x);
 }
 
 Evaluation AtomicVariables::evaluate(Atoms& atoms) const {
@@ -49,7 +67,7 @@ Evaluation AtomicVariables::evaluate(Atoms& atoms) const {
 
     Evaluation out;
     out.energy = *results.energy;
-    out.gradient = scaled(-1.0, results.forces);
+    out.gradient = scaled(-1.0, movable_forces(atoms, results));
     return out;
 }
 
@@ -130,7 +148,10 @@ void CellVariables::unpack(const std::vector<double>& x, Atoms& atoms) const {
     for (std::size_t i = 0; i < natoms_; ++i) {
         (Vec3::load(x.data() + 3 * i) * S).store(positions.data() + 3 * i);
     }
-    atoms.set_positions(positions);
+    // The deformation has already moved the atoms, so the constraints are
+    // applied against where they were before this step, not against the
+    // undeformed frame.
+    atoms.move_to(positions);
 }
 
 Evaluation CellVariables::evaluate(Atoms& atoms) const {
@@ -146,9 +167,10 @@ Evaluation CellVariables::evaluate(Atoms& atoms) const {
     out.gradient.assign(size(), 0.0);
 
     // dE/dy_i = -F_i S^T
+    const std::vector<double> forces = movable_forces(atoms, results);
     const Mat3 transposed = S.transposed();
     for (std::size_t i = 0; i < natoms_; ++i) {
-        const Vec3 force = Vec3::load(results.forces.data() + 3 * i);
+        const Vec3 force = Vec3::load(forces.data() + 3 * i);
         ((-force) * transposed).store(out.gradient.data() + 3 * i);
     }
 

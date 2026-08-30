@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "fastatoms/core/cell.hpp"
+#include "fastatoms/core/constraints.hpp"
+#include "fastatoms/io/parameters.hpp"
 #include "fastatoms/core/vec3.hpp"
 
 namespace fastatoms {
@@ -150,6 +152,21 @@ public:
     [[nodiscard]] std::vector<std::string> array_names() const;
     /// @}
 
+    /// \name Frame information
+    ///
+    /// Per-structure scalars, as opposed to the per-atom arrays above: the
+    /// energy of a trajectory frame, its timestep, a label. Extended XYZ
+    /// carries exactly this on its comment line, and without somewhere to put
+    /// it a reader would have to drop `energy=` on the floor.
+    ///
+    /// The name and the shape follow ASE's `atoms.info`, so a script that
+    /// knows one knows the other.
+    /// @{
+    [[nodiscard]] const Value& info() const noexcept { return info_; }
+    [[nodiscard]] Value& info() noexcept { return info_; }
+    void set_info(Value info);
+    /// @}
+
     /// \name Geometry
     /// @{
     /// Displacement `r_j - r_i`, minimum-image convention when `mic` is set.
@@ -249,6 +266,50 @@ public:
     [[nodiscard]] std::array<double, 6> get_stress();
     /// @}
 
+    /// \name Constraints
+    ///
+    /// Constraints restrict how the atoms may move, and every part of the
+    /// code that moves them respects the list attached here: `get_forces()`
+    /// returns forces with the forbidden components already projected out,
+    /// the optimizers project each proposed step, the integrators project the
+    /// velocities too, and the nudged elastic band projects again after its
+    /// own tangent projection.
+    ///
+    /// A constraint is immutable once built, so copies of an `Atoms` share
+    /// theirs. Nothing can modify a constraint through one structure and
+    /// surprise another; to change one, attach a different one.
+    /// @{
+    /// \throws ConstraintError if a constraint names an atom that is not here.
+    void set_constraints(ConstraintList constraints);
+    void add_constraint(std::shared_ptr<Constraint> constraint);
+    void clear_constraints() noexcept { constraints_.clear(); }
+    [[nodiscard]] const ConstraintList& constraints() const noexcept { return constraints_; }
+    [[nodiscard]] bool has_constraints() const noexcept { return !constraints_.empty(); }
+
+    /// Project the forbidden components out of `forces` in place. Called for
+    /// you by `get_forces()`; call it yourself only on forces obtained some
+    /// other way.
+    void adjust_forces(std::vector<double>& forces) const;
+
+    /// Project a proposed set of positions onto what the constraints allow,
+    /// treating `reference` as where the atoms moved from.
+    void adjust_positions(const std::vector<double>& reference,
+                          std::vector<double>& positions) const;
+
+    /// As above for momenta or velocities.
+    void adjust_momenta(std::vector<double>& momenta) const;
+
+    /// Degrees of freedom the constraints remove, counted without
+    /// double-counting an atom that two of them name.
+    [[nodiscard]] int constrained_degrees_of_freedom() const;
+
+    /// Set the positions, projected onto what the constraints allow, using the
+    /// current positions as the reference. This is what an optimizer or an
+    /// integrator wants; `set_positions` itself stays unconstrained, because
+    /// building a structure is not a move.
+    void move_to(const std::vector<double>& positions);
+    /// @}
+
     /// One-line summary used by the Python `repr`.
     [[nodiscard]] std::string to_string() const;
 
@@ -264,12 +325,14 @@ private:
     std::vector<double> masses_;   ///< empty or N
     std::vector<double> momenta_;  ///< empty or 3N
     std::vector<double> charges_;  ///< empty or N
+    Value info_{};                 ///< per-frame scalars, e.g. energy
     std::vector<int> tags_;        ///< empty or N
 
     std::map<std::string, Array> extra_;
 
     Cell cell_{};
     std::shared_ptr<Calculator> calculator_{};
+    ConstraintList constraints_{};
 };
 
 }  // namespace fastatoms

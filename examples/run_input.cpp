@@ -61,6 +61,29 @@ void print_simulation(const SimulationParameters& simulation) {
                     n.size() > 2 ? n[2] : 1.0, simulation.phonon.displacement,
                     simulation.phonon.symmetry ? "on" : "off");
     }
+    if (simulation.task == Task::NEB) {
+        const BandParameters& band = simulation.neb;
+        if (band.band.empty()) {
+            const char* from = !band.initial_structure.is_null() ? "an inline structure"
+                               : band.initial.empty()            ? "structure:"
+                                                                 : band.initial.c_str();
+            const char* to = !band.final_structure.is_null() ? "an inline structure"
+                                                             : band.final.c_str();
+            std::printf("neb         : %lld images, %s to %s\n",
+                        static_cast<long long>(band.images), from, to);
+        } else {
+            std::printf("neb         : the band in '%s'\n", band.band.c_str());
+        }
+        std::printf("              k=%g eV/A^2, tangent %s, climbing %s\n", band.spring_constant,
+                    band.tangent.c_str(), band.climbing ? "on" : "off");
+        if (band.automatic) {
+            std::printf("              autoneb, growing to %lld images (coarse fmax %g)\n",
+                        static_cast<long long>(band.max_images), band.coarse_fmax);
+        }
+        if (!band.fixed_atoms.empty()) {
+            std::printf("              %zu atoms held\n", band.fixed_atoms.size());
+        }
+    }
     if (!simulation.output.trajectory.empty()) {
         std::printf("trajectory  : %s every %lld steps\n", simulation.output.trajectory.c_str(),
                     static_cast<long long>(simulation.output.interval));
@@ -216,6 +239,86 @@ void run_phonons(Atoms& atoms, const SimulationParameters& simulation) {
     }
 }
 
+/// Print an energy profile the way `python/examples/neb.py` does.
+void print_profile(const neb::BandProfile& profile) {
+    std::printf("\n%4s %12s %14s %12s\n", "image", "s [A]", "E-E0 [eV]", "fmax [eV/A]");
+    for (std::size_t k = 0; k < profile.energies.size(); ++k) {
+        const bool interior = k > 0 && k + 1 < profile.energies.size();
+        std::printf("%4zu %12.4f %14.6f", k, profile.distances[k],
+                    profile.energies[k] - profile.energies.front());
+        if (interior) {
+            std::printf(" %12.3e", profile.image_fmax[k - 1]);
+        } else {
+            std::printf(" %12s", "fixed");
+        }
+        std::printf("%s\n", k == profile.highest ? "   <- highest" : "");
+    }
+    std::printf("\nforward barrier : %.6f eV\n", profile.forward_barrier);
+    std::printf("reverse barrier : %.6f eV\n", profile.reverse_barrier);
+    std::printf("reaction energy : %.6f eV\n", profile.reaction_energy);
+}
+
+/// Attach the calculator the file names, build the band it describes, and
+/// relax it with the optimizer from the `optimizer:` section.
+void run_neb(Atoms& atoms, const SimulationParameters& simulation) {
+    if (simulation.task != Task::NEB) {
+        return;
+    }
+    if (simulation.calculator.name.empty()) {
+        std::printf("\nthe task is 'neb' but no calculator is configured\n");
+        return;
+    }
+    try {
+        atoms.set_calculator(make_calculator(simulation.calculator));
+    } catch (const CalculatorError& error) {
+        std::printf("\nskipping the band: %s\n", error.what());
+        return;
+    }
+
+    // FIRE unless the file asked for something else: the band force is not the
+    // gradient of anything, so an optimizer with a line search will be
+    // refused, and "bfgs" is the deck-wide default.
+    OptimizerParameters spec = simulation.optimizer;
+    if (simulation.optimizer.parameters.is_null()) {
+        spec.algorithm = "fire";
+    }
+
+    if (neb::wants_autoneb(simulation)) {
+        neb::AutoNEB automatic = neb::make_autoneb(atoms, simulation);
+        std::printf("\n%s\n", automatic.band().to_string().c_str());
+
+        const neb::AutoNEBResult result = automatic.run(spec.algorithm, spec.parameters);
+        std::printf("\n%s\n", result.to_string().c_str());
+        print_profile(result.profile);
+        if (!simulation.output.trajectory.empty()) {
+            io::write(simulation.output.trajectory, automatic.band().images());
+            std::printf("\nband written to %s\n", simulation.output.trajectory.c_str());
+        }
+        return;
+    }
+
+    neb::NEB band = neb::make_band(atoms, simulation);
+    std::printf("\n%s\n", band.to_string().c_str());
+
+    auto optimizer = optimize::make_optimizer(spec);
+    std::printf("relaxing with %s\n", optimizer->to_string().c_str());
+    std::printf("%6s %16s %14s\n", "step", "sum E [eV]", "fmax [eV/A]");
+    optimizer->attach([](const optimize::OptimizationStep& step) {
+        std::printf("%6d %16.6f %14.6f\n", step.step, step.energy, step.fmax);
+        return true;
+    });
+
+    const optimize::OptimizationResult result = band.run(*optimizer);
+    std::printf("\n%s\n", result.message.c_str());
+    std::printf("force calls : %d\n", result.evaluations);
+    print_profile(band.profile());
+
+    if (!simulation.output.trajectory.empty()) {
+        io::write(simulation.output.trajectory, band.images());
+        std::printf("\nband written to %s\n", simulation.output.trajectory.c_str());
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -238,8 +341,12 @@ int main(int argc, char** argv) {
         run_optimization(deck.atoms, deck.simulation);
         run_dynamics(deck.atoms, deck.simulation);
         run_phonons(deck.atoms, deck.simulation);
+        run_neb(deck.atoms, deck.simulation);
     } catch (const InputError& error) {
         std::fprintf(stderr, "input error: %s\n", error.what());
+        return 1;
+    } catch (const neb::NEBError& error) {
+        std::fprintf(stderr, "neb error: %s\n", error.what());
         return 1;
     } catch (const phonon::PhononError& error) {
         std::fprintf(stderr, "phonon error: %s\n", error.what());

@@ -11,23 +11,6 @@
 namespace fastatoms::md {
 namespace {
 
-std::string format(double value, int precision = 8) {
-    std::ostringstream out;
-    out << std::setprecision(precision) << value;
-    return out.str();
-}
-
-/// The forces from the last evaluation, if the calculator left any behind.
-const std::vector<double>* stored_forces(const Atoms& atoms) {
-    if (!atoms.has_array("forces")) {
-        return nullptr;
-    }
-    const Atoms::Array& array = atoms.array("forces");
-    if (array.ncols != 3 || array.data.size() != 3 * atoms.size()) {
-        return nullptr;
-    }
-    return &array.data;
-}
 
 }  // namespace
 
@@ -57,77 +40,52 @@ TrajectoryWriter::TrajectoryWriter(std::filesystem::path path, TrajectoryOptions
 
 bool TrajectoryWriter::wants(int step) const { return step % options_.interval == 0; }
 
+Value TrajectoryWriter::frame_info(const DynamicsStep& step) {
+    Value info(Value::Map{});
+    info.insert("step", Value(static_cast<std::int64_t>(step.step)));
+    info.insert("time", Value(step.time));
+    info.insert("energy", Value(step.potential_energy));
+    info.insert("kinetic_energy", Value(step.kinetic_energy));
+    info.insert("total_energy", Value(step.total_energy));
+    info.insert("conserved_energy", Value(step.conserved_energy));
+    info.insert("temperature", Value(step.temperature));
+    info.insert("pressure", Value(step.pressure));
+    info.insert("volume", Value(step.volume));
+    return info;
+}
+
 std::string TrajectoryWriter::frame(const Atoms& atoms, const DynamicsStep& step,
                                     const TrajectoryOptions& options) {
-    std::ostringstream out;
-    out << atoms.size() << "\n";
-
-    // The comment line carries the cell and the per-frame scalars, in the
-    // key=value form extended XYZ readers expect.
-    const Mat3& cell = atoms.cell().matrix();
-    out << "Lattice=\"";
-    for (std::size_t k = 0; k < 9; ++k) {
-        out << (k ? " " : "") << format(cell.m[k]);
-    }
-    out << "\" Properties=species:S:1";
-    if (options.positions) {
-        out << ":pos:R:3";
-    }
-    if (options.velocities) {
-        out << ":velo:R:3";
-    }
-    if (options.forces) {
-        out << ":forces:R:3";
-    }
-
-    const auto& pbc = atoms.pbc();
-    out << " pbc=\"" << (pbc[0] ? 'T' : 'F') << " " << (pbc[1] ? 'T' : 'F') << " "
-        << (pbc[2] ? 'T' : 'F') << "\"";
-    out << " step=" << step.step;
-    out << " time=" << format(step.time, 10);
-    out << " energy=" << format(step.potential_energy, 12);
-    out << " kinetic_energy=" << format(step.kinetic_energy, 12);
-    out << " total_energy=" << format(step.total_energy, 12);
-    out << " conserved_energy=" << format(step.conserved_energy, 12);
-    out << " temperature=" << format(step.temperature, 8);
-    out << " pressure=" << format(step.pressure, 8);
-    out << " volume=" << format(step.volume, 10);
-    out << "\n";
-
-    const std::vector<double> velocities =
-        options.velocities ? atoms.velocities() : std::vector<double>{};
-    const std::vector<double>* forces = options.forces ? stored_forces(atoms) : nullptr;
-
-    for (std::size_t i = 0; i < atoms.size(); ++i) {
-        out << atoms.symbol(i);
-        if (options.positions) {
-            const Vec3 r = atoms.position(i);
-            out << " " << format(r.x) << " " << format(r.y) << " " << format(r.z);
-        }
-        if (options.velocities) {
-            out << " " << format(velocities[3 * i]) << " " << format(velocities[3 * i + 1])
-                << " " << format(velocities[3 * i + 2]);
-        }
-        if (options.forces) {
-            // A run that never evaluated forces still produces a valid frame.
-            const double fx = forces != nullptr ? (*forces)[3 * i] : 0.0;
-            const double fy = forces != nullptr ? (*forces)[3 * i + 1] : 0.0;
-            const double fz = forces != nullptr ? (*forces)[3 * i + 2] : 0.0;
-            out << " " << format(fx) << " " << format(fy) << " " << format(fz);
-        }
-        out << "\n";
-    }
-    return out.str();
+    io::ExtxyzOptions extxyz;
+    extxyz.velocities = options.velocities;
+    extxyz.forces = options.forces;
+    extxyz.info = frame_info(step);
+    return io::extxyz_string(atoms, extxyz);
 }
 
 void TrajectoryWriter::write(const Atoms& atoms, const DynamicsStep& step) {
-    std::ofstream stream(path_, std::ios::app);
-    if (!stream) {
-        throw DynamicsError("cannot append to '" + path_.string() + "'");
+    if (!writer_) {
+        io::ExtxyzOptions extxyz;
+        extxyz.velocities = options_.velocities;
+        extxyz.forces = options_.forces;
+        // The constructor has already truncated the file when asked to, so the
+        // writer always appends from here.
+        extxyz.append = true;
+        try {
+            writer_ = std::make_unique<io::ExtxyzWriter>(path_.string(), extxyz);
+        } catch (const io::ExtxyzError& error) {
+            throw DynamicsError(error.what());
+        }
     }
-    stream << frame(atoms, step, options_);
-    if (!stream) {
-        throw DynamicsError("failed while writing '" + path_.string() + "'");
+    try {
+        writer_->write(atoms, frame_info(step));
+        // Flushed every frame, not every megabyte. A trajectory that only
+        // reaches the disk when the run ends cannot be watched while it runs,
+        // and a run that dies takes its output with it. The file handle stays
+        // open, which is where the cost of the old reopen-per-frame was.
+        writer_->flush();
+    } catch (const io::ExtxyzError& error) {
+        throw DynamicsError(error.what());
     }
     ++frames_;
 }

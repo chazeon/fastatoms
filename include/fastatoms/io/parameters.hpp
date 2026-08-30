@@ -151,7 +151,7 @@ private:
 };
 
 /// What the run should do.
-enum class Task { SinglePoint, MolecularDynamics, Optimization, Phonon, Custom };
+enum class Task { SinglePoint, MolecularDynamics, Optimization, Phonon, NEB, Custom };
 
 [[nodiscard]] Task task_from_string(std::string_view name);
 [[nodiscard]] std::string_view task_to_string(Task task);
@@ -210,6 +210,52 @@ struct PhononParameters {
     Value parameters{};
 };
 
+/// Nudged-elastic-band settings.
+///
+/// The endpoints are files, or the deck's own `structure:` for the initial
+/// one. They are not resolved here: parsing stays free of file I/O, so a
+/// document can be read and validated without the structures it names being
+/// present. `neb::make_band` does the reading.
+struct BandParameters {
+    /// Path to the first endpoint. Empty means the deck's `structure:`.
+    std::string initial{};
+    /// Path to the last endpoint. Required unless `band` is set.
+    std::string final{};
+    /// The endpoints written inline, in the `structure:` layout, instead of
+    /// named as files. Small systems are more legible in one document than
+    /// split across three, and it keeps a self-contained deck possible.
+    Value initial_structure{};
+    Value final_structure{};
+    /// A prepared multi-frame band - what `fastatoms-interpolate` writes, or a
+    /// partly converged band being restarted. Overrides `initial` and `final`,
+    /// and `images` then follows the file.
+    std::string band{};
+
+    /// Images including the two endpoints, when interpolating.
+    std::int64_t images{7};
+
+    double spring_constant{0.1};
+    bool climbing{false};
+    double climb_threshold{0.0};
+    std::string tangent{"improved"};
+    bool variable_springs{false};
+    double spring_softening{0.5};
+    bool minimum_image{true};
+    std::vector<std::int64_t> fixed_atoms{};
+
+    /// Grow the band with AutoNEB instead of relaxing a fixed one.
+    bool automatic{false};
+    std::int64_t max_images{11};
+    double coarse_fmax{0.2};
+    std::string insert{"energy"};
+    bool prune{false};
+    double prune_tolerance{0.01};
+    bool redistribute{false};
+
+    /// The unparsed `neb:` subtree.
+    Value parameters{};
+};
+
 /// Where results should go.
 struct OutputParameters {
     std::string trajectory{};
@@ -225,6 +271,7 @@ struct SimulationParameters {
     MolecularDynamicsParameters md{};
     OptimizerParameters optimizer{};
     PhononParameters phonon{};
+    BandParameters neb{};
     OutputParameters output{};
 
     /// The unparsed `simulation:` subtree, so that consumers can read keys the

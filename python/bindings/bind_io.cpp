@@ -9,6 +9,7 @@ py::class_<io::InputDeck> bind_io(py::module_& m) {
         .value("md", Task::MolecularDynamics)
         .value("optimize", Task::Optimization)
         .value("phonon", Task::Phonon)
+        .value("neb", Task::NEB)
         .value("custom", Task::Custom);
 
     py::class_<CalculatorParameters>(m, "CalculatorParameters",
@@ -54,6 +55,40 @@ py::class_<io::InputDeck> bind_io(py::module_& m) {
                    "', fmax=" + std::to_string(self.fmax) + ")";
         });
 
+    py::class_<BandParameters>(m, "BandParameters",
+                               "Settings from the ``simulation.neb`` section.")
+        .def(py::init<>())
+        .def_readwrite("initial", &BandParameters::initial, "Path to the first endpoint.")
+        .def_readwrite("final", &BandParameters::final, "Path to the last endpoint.")
+        .def_readwrite("band", &BandParameters::band,
+                       "Path to a prepared multi-frame band, which overrides the endpoints.")
+        .def_readwrite("initial_structure", &BandParameters::initial_structure,
+                       "The first endpoint written inline, as a dict.")
+        .def_readwrite("final_structure", &BandParameters::final_structure,
+                       "The last endpoint written inline, as a dict.")
+        .def_readwrite("images", &BandParameters::images, "Images, endpoints included.")
+        .def_readwrite("spring_constant", &BandParameters::spring_constant)
+        .def_readwrite("climbing", &BandParameters::climbing)
+        .def_readwrite("climb_threshold", &BandParameters::climb_threshold)
+        .def_readwrite("tangent", &BandParameters::tangent)
+        .def_readwrite("variable_springs", &BandParameters::variable_springs)
+        .def_readwrite("spring_softening", &BandParameters::spring_softening)
+        .def_readwrite("minimum_image", &BandParameters::minimum_image)
+        .def_readwrite("fixed_atoms", &BandParameters::fixed_atoms)
+        .def_readwrite("automatic", &BandParameters::automatic, "Use AutoNEB.")
+        .def_readwrite("max_images", &BandParameters::max_images)
+        .def_readwrite("coarse_fmax", &BandParameters::coarse_fmax)
+        .def_readwrite("insert", &BandParameters::insert)
+        .def_readwrite("prune", &BandParameters::prune)
+        .def_readwrite("prune_tolerance", &BandParameters::prune_tolerance)
+        .def_readwrite("redistribute", &BandParameters::redistribute)
+        .def_readwrite("parameters", &BandParameters::parameters,
+                       "The unparsed ``neb:`` subtree.")
+        .def("__repr__", [](const BandParameters& self) {
+            return "BandParameters(images=" + std::to_string(self.images) +
+                   ", climbing=" + (self.climbing ? "True" : "False") + ")";
+        });
+
     py::class_<OutputParameters>(m, "OutputParameters",
                                  "Settings from the ``simulation.output`` section.")
         .def(py::init<>())
@@ -75,6 +110,7 @@ py::class_<io::InputDeck> bind_io(py::module_& m) {
         .def_readwrite("md", &SimulationParameters::md)
         .def_readwrite("optimizer", &SimulationParameters::optimizer)
         .def_readwrite("phonon", &SimulationParameters::phonon)
+        .def_readwrite("neb", &SimulationParameters::neb)
         .def_readwrite("output", &SimulationParameters::output)
         .def_readwrite("raw", &SimulationParameters::raw,
                        "The whole section as a dict, including keys FastAtoms ignores.")
@@ -95,18 +131,64 @@ py::class_<io::InputDeck> bind_io(py::module_& m) {
         });
 
 
+    // -----------------------------------------------------------------
+    // Structures. Extended XYZ is the default format; the extension picks.
+    // -----------------------------------------------------------------
     m.def(
-        "read", [](const std::string& path) { return io::read_yaml_file(path); }, py::arg("path"),
-        "Parse a YAML input file into an :class:`InputDeck`.");
+        "read",
+        [](const std::string& path, std::ptrdiff_t index) { return io::read(path, index); },
+        py::arg("path"), py::arg("index") = -1,
+        R"doc(
+Read a structure.
+
+    atoms = fa.read("relaxed.extxyz")        # the last frame
+    first = fa.read("md.extxyz", index=0)    # the first
+
+Extended XYZ unless the extension says YAML, and a negative index counts from
+the end - so the default is the final frame of a trajectory, which is the
+relaxed geometry or the last configuration of a run.
+
+To load an input file describing a *run*, rather than a structure, use
+:func:`read_input`: extended XYZ has nowhere to say which calculator to attach.
+)doc");
+
+    m.def("read_frames", &io::read_frames, py::arg("path"),
+          "Every frame of a trajectory, as a list of :class:`Atoms`.");
 
     m.def(
-        "read_string", [](const std::string& text) { return io::read_yaml_string(text); },
-        py::arg("text"), "Parse a YAML document held in a string.");
+        "read_input", [](const std::string& path) { return io::read_yaml_file(path); },
+        py::arg("path"), "Parse a YAML input file into an :class:`InputDeck`.");
+
+    m.def(
+        "read_input_string", [](const std::string& text) { return io::read_yaml_string(text); },
+        py::arg("text"), "Parse a YAML input document held in a string.");
+
+    m.def(
+        "read_extxyz",
+        [](const std::string& path, std::ptrdiff_t index) {
+            return io::read_extxyz(path, index);
+        },
+        py::arg("path"), py::arg("index") = -1,
+        "Read a frame from an extended XYZ file, whatever the extension says.");
+
+    m.def("read_extxyz_frames", &io::read_extxyz_frames, py::arg("path"),
+          "Every frame of an extended XYZ file.");
+
+    m.def(
+        "parse_extxyz",
+        [](const std::string& text, std::ptrdiff_t index) {
+            return io::parse_extxyz(text, index);
+        },
+        py::arg("text"), py::arg("index") = -1,
+        "Read a frame from extended XYZ text held in a string.");
+
+    m.def("parse_extxyz_frames", &io::parse_extxyz_frames, py::arg("text"),
+          "Every frame in extended XYZ text held in a string.");
 
     m.def(
         "read_atoms",
-        [](const std::string& path) { return io::read_yaml_file(path).atoms; }, py::arg("path"),
-        "Parse only the structure from a YAML file.");
+        [](const std::string& path) { return io::read(path); }, py::arg("path"),
+        "The structure from a file, whatever its format. An alias for :func:`read`.");
 
     m.def(
         "parse_yaml", [](const std::string& text) { return io::parse_yaml_string(text); },
@@ -116,13 +198,86 @@ py::class_<io::InputDeck> bind_io(py::module_& m) {
         "parse_yaml_file", [](const std::string& path) { return io::parse_yaml_file(path); },
         py::arg("path"), "Parse an arbitrary YAML file into plain Python data.");
 
+    // Keyword arguments become the writer's options, so a call reads the same
+    // as the file it produces.
+    const auto extxyz_options = [](const py::kwargs& kwargs) {
+        io::ExtxyzOptions options;
+        for (const auto item : kwargs) {
+            const std::string key = py::cast<std::string>(item.first);
+            const py::handle value = item.second;
+            if (key == "append") {
+                options.append = value.cast<bool>();
+            } else if (key == "velocities") {
+                options.velocities = value.cast<bool>();
+            } else if (key == "forces") {
+                options.forces = value.cast<bool>();
+            } else if (key == "masses") {
+                options.masses = value.cast<bool>();
+            } else if (key == "charges") {
+                options.charges = value.cast<bool>();
+            } else if (key == "precision") {
+                options.precision = value.cast<int>();
+            } else if (key == "arrays") {
+                options.arrays = value.cast<std::vector<std::string>>();
+            } else if (key == "info") {
+                options.info = value.cast<Value>();
+            } else {
+                throw std::invalid_argument("write: unknown option '" + key + "'");
+            }
+        }
+        return options;
+    };
+
     m.def(
         "write",
+        [extxyz_options](const std::string& path, const py::object& structure,
+                         const py::kwargs& kwargs) {
+            const io::ExtxyzOptions options = extxyz_options(kwargs);
+            if (py::isinstance<Atoms>(structure)) {
+                io::write(path, structure.cast<Atoms>(), options);
+            } else {
+                io::write(path, structure.cast<std::vector<Atoms>>(), options);
+            }
+        },
+        py::arg("path"), py::arg("atoms"),
+        R"doc(
+Write a structure, or a list of them, to a file.
+
+    fa.write("relaxed.extxyz", atoms)
+    fa.write("md.extxyz", frames)                 # a whole trajectory
+    fa.write("md.extxyz", atoms, append=True)     # one more frame
+
+Extended XYZ unless the extension says YAML. Real numbers are written in the
+shortest form that reads back as exactly the same double; pass ``precision`` to
+trade that for a smaller file.
+
+Options: ``append``, ``velocities``, ``forces``, ``masses``, ``charges``,
+``arrays``, ``precision``, ``info``.
+)doc");
+
+    m.def(
+        "append",
+        [extxyz_options](const std::string& path, const Atoms& atoms,
+                         const py::kwargs& kwargs) {
+            io::append(path, atoms, extxyz_options(kwargs));
+        },
+        py::arg("path"), py::arg("atoms"),
+        "Append one frame to a trajectory, creating the file if needed.");
+
+    m.def(
+        "to_extxyz",
+        [extxyz_options](const Atoms& atoms, const py::kwargs& kwargs) {
+            return io::extxyz_string(atoms, extxyz_options(kwargs));
+        },
+        py::arg("atoms"), "Serialise a structure to an extended XYZ string.");
+
+    m.def(
+        "write_yaml",
         [](const std::string& path, const Atoms& atoms, bool scaled) {
             io::write_yaml_file(path, atoms, scaled);
         },
         py::arg("path"), py::arg("atoms"), py::arg("scaled") = false,
-        "Write a structure to a YAML file that :func:`read` accepts.");
+        "Write a structure to a YAML file, whatever the extension says.");
 
     m.def(
         "to_yaml",

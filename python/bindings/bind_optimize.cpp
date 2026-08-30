@@ -3,6 +3,7 @@
 
 #include "fastatoms/optimize/bfgs.hpp"
 #include "fastatoms/optimize/conjugate_gradient.hpp"
+#include "fastatoms/optimize/fire.hpp"
 #include "fastatoms/optimize/lbfgs.hpp"
 #include "fastatoms/optimize/registry.hpp"
 #include "fastatoms/optimize/steepest_descent.hpp"
@@ -244,6 +245,31 @@ is O(memory * n) instead of O(n^2). The right choice for large structures.
         .def_property_readonly("history_size", &LBFGS::history_size,
                                "Correction pairs currently stored.")
         .def_property_readonly("skipped_updates", &LBFGS::skipped_updates);
+
+    py::class_<Fire, Optimizer, std::shared_ptr<Fire>>(m, "Fire", R"doc(
+FIRE: a ball rolling downhill with adaptive friction.
+
+    fa.optimize(atoms, "fire", fmax=0.02)
+
+The velocity is mixed towards the force while progress is being made and reset
+the moment it turns uphill, with the timestep growing and collapsing to match.
+No curvature model and no line search.
+
+This is the optimizer for a nudged elastic band. The band force is not the
+gradient of any energy - the springs are added by hand and the climbing image's
+parallel component is reversed - so there is nothing for a line search to
+decrease and nothing for a quasi-Newton method to model. FIRE asks only for a
+direction to roll in.
+)doc")
+        .def(py::init([&from_kwargs](const py::kwargs& kwargs) {
+                 return std::make_shared<Fire>(from_kwargs(kwargs));
+             }))
+        .def_property_readonly("timestep", &Fire::timestep,
+                               "The adaptive timestep as it stands.")
+        .def_property_readonly("mixing", &Fire::mixing,
+                               "How strongly the velocity is bent towards the force.")
+        .def_property_readonly("downhill_steps", &Fire::downhill_steps,
+                               "Consecutive steps that have gone downhill.");
 
     // Short aliases, matching the names the input files accept.
     m.attr("SD") = m.attr("SteepestDescent");

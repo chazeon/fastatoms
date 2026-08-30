@@ -30,7 +30,17 @@ double Atoms::get_potential_energy(bool force_consistent) {
     return require_calculator(calculator_).get_potential_energy(*this, force_consistent);
 }
 
-std::vector<double> Atoms::get_forces() { return require_calculator(calculator_).get_forces(*this); }
+std::vector<double> Atoms::get_forces() {
+    std::vector<double> forces = require_calculator(calculator_).get_forces(*this);
+    // Constraints are applied here, on the way out, rather than inside the
+    // calculator. That is what makes them universal: every optimizer, every
+    // integrator and every band image goes through this one function, so none
+    // of them has to remember. The calculator's own cached result stays the
+    // unconstrained force the model actually produced, which is what you want
+    // when reading `atoms.calc.results`.
+    adjust_forces(forces);
+    return forces;
+}
 
 std::array<double, 6> Atoms::get_stress() {
     return require_calculator(calculator_).get_stress(*this);

@@ -1,0 +1,85 @@
+# An argon adatom hopping between two hollow sites of a square surface layer,
+# by climbing-image NEB.
+#
+#     ./build/examples/fastatoms-run examples/neb_argon.yaml
+#
+# The endpoints are written inline because the system is small. For anything
+# larger, relax the two ends, build a starting band with
+#
+#     ./build/examples/fastatoms-interpolate initial.extxyz final.extxyz \
+#         -n 9 --idpp -o band.extxyz
+#
+# and point `neb.band` at the result instead of `initial`/`final`. That is also
+# how a partly converged band is restarted, since the run writes one out.
+
+structure:
+  # The initial state. `neb.initial` defaults to this.
+  cell: [[15.20, 0.00, 0.00], [0.00, 15.20, 0.00], [0.00, 0.00, 24.00]]
+  pbc: xy
+  atoms:
+    - [Ar,  0.0000,  0.0000,  0.0000]
+    - [Ar,  0.0000,  3.8000,  0.0000]
+    - [Ar,  0.0000,  7.6000,  0.0000]
+    - [Ar,  0.0000, 11.4000,  0.0000]
+    - [Ar,  3.8000,  0.0000,  0.0000]
+    - [Ar,  3.8000,  3.8000,  0.0000]
+    - [Ar,  3.8000,  7.6000,  0.0000]
+    - [Ar,  3.8000, 11.4000,  0.0000]
+    - [Ar,  7.6000,  0.0000,  0.0000]
+    - [Ar,  7.6000,  3.8000,  0.0000]
+    - [Ar,  7.6000,  7.6000,  0.0000]
+    - [Ar,  7.6000, 11.4000,  0.0000]
+    - [Ar, 11.4000,  0.0000,  0.0000]
+    - [Ar, 11.4000,  3.8000,  0.0000]
+    - [Ar, 11.4000,  7.6000,  0.0000]
+    - [Ar, 11.4000, 11.4000,  0.0000]
+    - [Ar,  1.9000,  1.9000,  2.7000]
+
+simulation:
+  task: neb
+
+  calculator:
+    name: lennard_jones
+    parameters: {epsilon: 0.0103, sigma: 3.40, cutoff: 9.0}
+
+  neb:
+    # The adatom hops one lattice vector in x; the surface does not move.
+    final:
+      cell: [[15.20, 0.00, 0.00], [0.00, 15.20, 0.00], [0.00, 0.00, 24.00]]
+      pbc: xy
+      atoms:
+        - [Ar,  0.0000,  0.0000,  0.0000]
+        - [Ar,  0.0000,  3.8000,  0.0000]
+        - [Ar,  0.0000,  7.6000,  0.0000]
+        - [Ar,  0.0000, 11.4000,  0.0000]
+        - [Ar,  3.8000,  0.0000,  0.0000]
+        - [Ar,  3.8000,  3.8000,  0.0000]
+        - [Ar,  3.8000,  7.6000,  0.0000]
+        - [Ar,  3.8000, 11.4000,  0.0000]
+        - [Ar,  7.6000,  0.0000,  0.0000]
+        - [Ar,  7.6000,  3.8000,  0.0000]
+        - [Ar,  7.6000,  7.6000,  0.0000]
+        - [Ar,  7.6000, 11.4000,  0.0000]
+        - [Ar, 11.4000,  0.0000,  0.0000]
+        - [Ar, 11.4000,  3.8000,  0.0000]
+        - [Ar, 11.4000,  7.6000,  0.0000]
+        - [Ar, 11.4000, 11.4000,  0.0000]
+        - [Ar,  5.7000,  1.9000,  2.7000]
+
+    images: 9
+    spring_constant: 0.5
+    climb: true
+
+    # The substrate, as a range rather than sixteen separate entries. Holding
+    # it is not optional: the projected band force does not have to sum to
+    # zero, so a free spectator atom keeps a force the tangent knows nothing
+    # about and drags the whole band along the reaction coordinate.
+    fix: ["0-15"]
+
+  optimizer:
+    algorithm: fire
+    fmax: 0.0001      # a flat saddle turns a loose force tolerance into a much
+    max_steps: 2000   # looser energy one, so barriers want a tight fmax
+
+  output:
+    trajectory: neb_argon_band.extxyz

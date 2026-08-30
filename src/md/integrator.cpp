@@ -38,10 +38,23 @@ void kick(std::vector<double>& velocities, const std::vector<double>& forces,
 
 /// `r += factor * v`, in place, straight into the structure's own buffer.
 void drift(Atoms& atoms, const std::vector<double>& velocities, double factor) {
-    double* FASTATOMS_RESTRICT positions = atoms.positions_data();
-    for (std::size_t k = 0; k < velocities.size(); ++k) {
-        positions[k] += factor * velocities[k];
+    if (!atoms.has_constraints()) {
+        double* FASTATOMS_RESTRICT positions = atoms.positions_data();
+        for (std::size_t k = 0; k < velocities.size(); ++k) {
+            positions[k] += factor * velocities[k];
+        }
+        return;
     }
+    // With constrained velocities the displacement is already legal, so this
+    // changes nothing in exact arithmetic. It is here because "already legal"
+    // depends on every other path having done its job, and a drift that
+    // enforces the constraint itself cannot be the one that breaks it.
+    const std::vector<double> reference = atoms.positions();
+    std::vector<double> moved = reference;
+    for (std::size_t k = 0; k < velocities.size(); ++k) {
+        moved[k] += factor * velocities[k];
+    }
+    atoms.move_to(moved);
 }
 
 std::string canonical(std::string_view name) {

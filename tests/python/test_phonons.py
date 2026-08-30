@@ -372,7 +372,7 @@ simulation:
 
 
 def test_yaml_section():
-    deck = fa.read_string(PHONON_INPUT)
+    deck = fa.read_input_string(PHONON_INPUT)
 
     assert deck.simulation.task == fa.Task.phonon
     assert deck.simulation.phonon.supercell == [2.0, 2.0, 2.0]

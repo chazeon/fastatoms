@@ -5,8 +5,10 @@
 /// \brief Writing a run out to disk.
 
 #include <filesystem>
+#include <memory>
 #include <string>
 
+#include "fastatoms/io/extxyz.hpp"
 #include "fastatoms/md/types.hpp"
 
 namespace fastatoms::md {
@@ -57,9 +59,16 @@ public:
     [[nodiscard]] static std::string frame(const Atoms& atoms, const DynamicsStep& step,
                                            const TrajectoryOptions& options);
 
+    /// The per-frame scalars this writer puts on the comment line.
+    [[nodiscard]] static Value frame_info(const DynamicsStep& step);
+
 private:
     std::filesystem::path path_;
     TrajectoryOptions options_;
+    /// Held open across the run. Reopening per frame - which this used to do -
+    /// costs an open, a seek to the end and a close for every step, which on a
+    /// network filesystem dwarfs the writing.
+    std::unique_ptr<io::ExtxyzWriter> writer_{};
     int frames_{0};
 };
 

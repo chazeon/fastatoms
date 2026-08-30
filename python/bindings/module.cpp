@@ -43,6 +43,10 @@ it re-exports everything here alongside a few pure-Python conveniences.
         m, "DynamicsError", PyExc_RuntimeError);
     static auto* const phonon_error = new py::exception<fastatoms::phonon::PhononError>(
         m, "PhononError", PyExc_RuntimeError);
+    static auto* const neb_error =
+        new py::exception<fastatoms::neb::NEBError>(m, "NEBError", PyExc_RuntimeError);
+    static auto* const constraint_error =
+        new py::exception<fastatoms::ConstraintError>(m, "ConstraintError", PyExc_ValueError);
     py::register_exception_translator([](std::exception_ptr p) {
         try {
             if (p) {
@@ -56,17 +60,23 @@ it re-exports everything here alongside a few pure-Python conveniences.
             py::set_error(*dynamics_error, e.what());
         } catch (const fastatoms::phonon::PhononError& e) {
             py::set_error(*phonon_error, e.what());
+        } catch (const fastatoms::neb::NEBError& e) {
+            py::set_error(*neb_error, e.what());
+        } catch (const fastatoms::ConstraintError& e) {
+            py::set_error(*constraint_error, e.what());
         }
     });
 
     fastatoms::bindings::bind_cell(m);
     py::class_<fastatoms::Atoms> atoms_class = fastatoms::bindings::bind_atoms(m);
     fastatoms::bindings::bind_neighbor_list(m);
+    fastatoms::bindings::bind_constraints(m, atoms_class);
     fastatoms::bindings::bind_elements(m);
     py::class_<fastatoms::io::InputDeck> deck_class = fastatoms::bindings::bind_io(m);
     fastatoms::bindings::bind_calculators(m, atoms_class, deck_class);
     fastatoms::bindings::bind_mlip(m);
     fastatoms::bindings::bind_forcefield(m);
+    fastatoms::bindings::bind_neb(m);
     fastatoms::bindings::bind_optimize(m, atoms_class, deck_class);
     fastatoms::bindings::bind_md(m, atoms_class, deck_class);
     fastatoms::bindings::bind_phonon(m, deck_class);

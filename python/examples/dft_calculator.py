@@ -91,7 +91,7 @@ def equation_of_state(atoms: fa.Atoms, calculator) -> None:
 
 def main(argv: list[str]) -> int:
     path = argv[1] if len(argv) > 1 else "examples/dft_silicon.yaml"
-    deck = fa.read(path)
+    deck = fa.read_input(path)
     atoms = deck.atoms
 
     print(f"FastAtoms {fa.__version__}")

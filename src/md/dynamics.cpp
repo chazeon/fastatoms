@@ -270,6 +270,17 @@ void Dynamics::prepare(Atoms& atoms) {
         // Start on the constraint surface, whatever the input geometry was.
         constraints_->enforce(atoms);
     }
+
+    // The other kind: the projections attached to the structure itself. Three
+    // degrees of freedom go per frozen atom, two per atom held to a line, one
+    // per atom held to a plane - counted from the projection rather than
+    // summed, so an atom named by two constraints is not charged twice.
+    if (atoms.has_constraints()) {
+        context_.degrees_of_freedom -= atoms.constrained_degrees_of_freedom();
+        if (context_.degrees_of_freedom < 1) {
+            fail("the constraints remove every degree of freedom this structure has");
+        }
+    }
     context_.temperature = temperature();
     context_.pressure = pressure();
     context_.fix_center_of_mass = fix_com;

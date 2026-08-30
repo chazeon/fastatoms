@@ -235,7 +235,7 @@ def test_unknown_backend_is_rejected():
 
 
 def test_yaml_selects_a_model():
-    deck = fa.read_string("""
+    deck = fa.read_input_string("""
 structure:
   cell: {a: 5.3, b: 5.3, c: 5.3}
   pbc: true

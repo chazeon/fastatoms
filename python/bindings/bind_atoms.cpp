@@ -75,6 +75,25 @@ struct AtomProxy {
     [[nodiscard]] Atoms& atoms() const { return owner.cast<Atoms&>(); }
 };
 
+/// A write-through view of `Atoms::info()`.
+///
+/// Returning a plain dict would make `atoms.info["energy"] = -1.5` look like it
+/// worked and quietly change nothing, which for the field extended XYZ exists
+/// to carry is worse than not offering it at all.
+struct InfoProxy {
+    py::object owner;
+
+    [[nodiscard]] Atoms& atoms() const { return owner.cast<Atoms&>(); }
+
+    [[nodiscard]] Value& map() const {
+        Atoms& target = atoms();
+        if (!target.info().is_map()) {
+            target.set_info(Value(Value::Map{}));
+        }
+        return target.info();
+    }
+};
+
 Cell cell_from_object(const py::object& source) {
     if (source.is_none()) {
         return Cell{};
@@ -148,6 +167,87 @@ moves the atom. The view is invalidated if the parent changes size.
                           "Atom('%s', [%.6f, %.6f, %.6f], index=%zu)",
                           atoms.symbol(self.index).c_str(), r.x, r.y, r.z, self.index);
             return std::string(buffer);
+        });
+
+    py::class_<InfoProxy>(m, "AtomsInfo",
+                          "A write-through view of a structure's frame information.")
+        .def("__getitem__",
+             [](const InfoProxy& self, const std::string& key) {
+                 const Value* found = self.map().find(key);
+                 if (found == nullptr) {
+                     throw py::key_error(key);
+                 }
+                 return *found;
+             })
+        .def("__setitem__",
+             [](const InfoProxy& self, const std::string& key, const Value& value) {
+                 self.map().insert(key, value);
+             })
+        .def("__delitem__",
+             [](const InfoProxy& self, const std::string& key) {
+                 Value& info = self.map();
+                 Value::Map remaining;
+                 bool removed = false;
+                 for (const auto& [name, value] : info.as_map()) {
+                     if (name == key) {
+                         removed = true;
+                     } else {
+                         remaining.emplace_back(name, value);
+                     }
+                 }
+                 if (!removed) {
+                     throw py::key_error(key);
+                 }
+                 self.atoms().set_info(Value(std::move(remaining)));
+             })
+        .def("__contains__",
+             [](const InfoProxy& self, const std::string& key) {
+                 return self.map().find(key) != nullptr;
+             })
+        .def("__len__", [](const InfoProxy& self) { return self.map().as_map().size(); })
+        .def("__iter__",
+             [](const InfoProxy& self) {
+                 py::list keys;
+                 for (const auto& [name, value] : self.map().as_map()) {
+                     (void)value;
+                     keys.append(py::str(name));
+                 }
+                 return py::iter(keys);
+             })
+        .def("keys",
+             [](const InfoProxy& self) {
+                 py::list keys;
+                 for (const auto& [name, value] : self.map().as_map()) {
+                     (void)value;
+                     keys.append(py::str(name));
+                 }
+                 return keys;
+             })
+        .def("items",
+             [](const InfoProxy& self) {
+                 py::list items;
+                 for (const auto& [name, value] : self.map().as_map()) {
+                     items.append(py::make_tuple(py::str(name), py::cast(value)));
+                 }
+                 return items;
+             })
+        .def("get",
+             [](const InfoProxy& self, const std::string& key, const py::object& fallback) {
+                 const Value* found = self.map().find(key);
+                 return found != nullptr ? py::cast(*found) : fallback;
+             },
+             py::arg("key"), py::arg("default") = py::none())
+        .def("update",
+             [](const InfoProxy& self, const Value& other) {
+                 if (other.is_map()) {
+                     for (const auto& [name, value] : other.as_map()) {
+                         self.map().insert(name, value);
+                     }
+                 }
+             })
+        .def("clear", [](const InfoProxy& self) { self.atoms().set_info(Value(Value::Map{})); })
+        .def("__repr__", [](const InfoProxy& self) {
+            return "AtomsInfo(" + self.map().to_string() + ")";
         });
 
     py::class_<Atoms> atoms_class(m, "Atoms", R"doc(
@@ -706,6 +806,21 @@ lengths, or a single number for a cubic cell.
             })
         .def("subset", &Atoms::subset, py::arg("indices"),
              "A new structure holding only the given atoms, in that order.")
+
+        .def_property(
+            "info",
+            [](py::object self) { return InfoProxy{std::move(self)}; },
+            [](Atoms& self, const Value& value) { self.set_info(value); },
+            R"doc(
+Per-frame scalars, as a write-through mapping.
+
+    atoms.info["energy"] = -1.5
+    atoms.info["step"]
+
+This is what an extended XYZ comment line carries beyond the structure - the
+energy of a frame, its timestep, a label - and it survives a write and a read.
+Named and shaped after ASE's ``atoms.info``.
+)doc")
 
         .def_property_readonly("arrays", [](py::object self) {
             Atoms& atoms = self.cast<Atoms&>();

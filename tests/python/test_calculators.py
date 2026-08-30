@@ -485,7 +485,7 @@ simulation:
 
 
 def test_calculator_comes_from_the_input_file():
-    deck = fa.read_string(DFT_INPUT)
+    deck = fa.read_input_string(DFT_INPUT)
     assert deck.simulation.calculator.name == "vasp"
     assert deck.simulation.calculator.parameters["encut"] == 400
 
@@ -505,7 +505,7 @@ def test_calculator_comes_from_the_input_file():
 def test_full_yaml_to_energy_round_trip(tmp_path):
     write_stub_engine(tmp_path, "stub_vasp.sh", "OUTCAR", OUTCAR)
 
-    deck = fa.read_string(DFT_INPUT)
+    deck = fa.read_input_string(DFT_INPUT)
     atoms = deck.atoms
     atoms.calc = deck.make_calculator(directory=str(tmp_path), command="sh stub_vasp.sh")
 

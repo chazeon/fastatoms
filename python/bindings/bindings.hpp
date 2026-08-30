@@ -236,6 +236,8 @@ void bind_cell(py::module_& m);
 /// methods to it without redeclaring the type.
 py::class_<Atoms> bind_atoms(py::module_& m);
 void bind_neighbor_list(py::module_& m);
+/// The motion constraints, and the `Atoms` methods carrying them.
+void bind_constraints(py::module_& m, py::class_<Atoms>& atoms);
 /// Returns the `InputDeck` class so the calculator bindings can add the
 /// `make_calculator()` shortcut to it.
 py::class_<io::InputDeck> bind_io(py::module_& m);
@@ -249,6 +251,8 @@ void bind_phonon(py::module_& m, py::class_<io::InputDeck>& deck);
 void bind_mlip(py::module_& m);
 /// The classical force field: water models, Ewald, and the constraints.
 void bind_forcefield(py::module_& m);
+/// The nudged elastic band and AutoNEB.
+void bind_neb(py::module_& m);
 
 /// Convert a Python property specification - a `Property`, a string, or a
 /// sequence of either - into the C++ list. `None` means the default set.

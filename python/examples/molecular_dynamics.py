@@ -154,7 +154,7 @@ def drive_from_the_input_file(path: str) -> None:
     print(f"Driving from {path}")
     print("=" * 78)
 
-    deck = fa.read(path)
+    deck = fa.read_input(path)
     atoms = deck.atoms
     atoms.calc = deck.make_calculator()
     md = deck.make_dynamics(steps=400, trajectory="", log="")

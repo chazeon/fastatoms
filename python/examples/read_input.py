@@ -65,7 +65,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     try:
-        deck = fa.read(argv[1])
+        deck = fa.read_input(argv[1])
     except fa.InputError as error:
         print(f"input error: {error}", file=sys.stderr)
         return 1

@@ -170,7 +170,7 @@ def drive_from_the_input_file(path: str) -> None:
     print(f"Driving from {path}")
     print("=" * 74)
 
-    deck = fa.read(path)
+    deck = fa.read_input(path)
     atoms = deck.atoms
     atoms.calc = deck.make_calculator()
     ph = deck.make_phonons(atoms)

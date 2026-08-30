@@ -7,6 +7,7 @@ set(FASTATOMS_BINDING_SOURCES
     bindings/module.cpp
     bindings/helpers.cpp
     bindings/bind_atoms.cpp
+    bindings/bind_constraints.cpp
     bindings/bind_calculators.cpp
     bindings/bind_cell.cpp
     bindings/bind_forcefield.cpp
@@ -14,6 +15,7 @@ set(FASTATOMS_BINDING_SOURCES
     bindings/bind_io.cpp
     bindings/bind_neighbor_list.cpp
     bindings/bind_md.cpp
+    bindings/bind_neb.cpp
     bindings/bind_mlip.cpp
     bindings/bind_optimize.cpp
     bindings/bind_phonon.cpp)

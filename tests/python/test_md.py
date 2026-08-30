@@ -611,7 +611,7 @@ simulation:
 
 
 def test_dynamics_comes_from_the_input_file(tmp_path):
-    deck = fa.read_string(MD_INPUT)
+    deck = fa.read_input_string(MD_INPUT)
     assert deck.simulation.md.ensemble == "nvt"
     assert deck.simulation.md.timestep_fs == 4.0
     assert deck.simulation.md.steps == 50
@@ -643,7 +643,7 @@ def test_output_section_feeds_the_writers(tmp_path):
         f"  output:\n    interval: 10\n    trajectory: {tmp_path / 'traj.xyz'}\n"
         f"    log: {tmp_path / 'run.log'}",
     )
-    deck = fa.read_string(text)
+    deck = fa.read_input_string(text)
     atoms = deck.atoms
     atoms.calc = deck.make_calculator()
     deck.make_dynamics().run(atoms)

@@ -91,6 +91,8 @@ argon-md.xyz
 si_md.yaml
 water_opt.yaml
 water-spce.xyz
+neb_argon_band.extxyz
+band.extxyz
 *.traj
 
 # Agent working notes (local only)

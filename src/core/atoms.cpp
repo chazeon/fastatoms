@@ -308,6 +308,12 @@ void Atoms::set_momenta(const std::vector<double>& momenta) {
     }
     require_length("set_momenta", momenta.size(), 3 * size());
     momenta_ = momenta;
+    // Velocities are constrained on the way in, the mirror of forces being
+    // constrained on the way out of `get_forces`. Between the two, every
+    // thermostat, barostat, integrator and velocity initialiser respects the
+    // constraints without having to know they exist - and a frozen atom given
+    // a velocity by a Maxwell-Boltzmann draw does not quietly wander off.
+    adjust_momenta(momenta_);
 }
 
 std::vector<double> Atoms::velocities() const {
@@ -339,6 +345,7 @@ void Atoms::set_velocities(const std::vector<double>& velocities) {
             momenta_[3 * i + k] = velocities[3 * i + k] * m;
         }
     }
+    adjust_momenta(momenta_);
 }
 
 std::vector<int> Atoms::tags() const {
@@ -356,6 +363,13 @@ void Atoms::set_tags(const std::vector<int>& tags) {
 
 std::vector<double> Atoms::charges() const {
     return charges_.empty() ? std::vector<double>(size(), 0.0) : charges_;
+}
+
+void Atoms::set_info(Value info) {
+    if (!info.is_null() && !info.is_map()) {
+        throw std::invalid_argument("Atoms::set_info: info must be a mapping");
+    }
+    info_ = info.is_null() ? Value(Value::Map{}) : std::move(info);
 }
 
 void Atoms::set_charges(const std::vector<double>& charges) {

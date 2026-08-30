@@ -18,10 +18,31 @@ Quick start
 >>> len(neighbours) > 0
 True
 
-Reading an input file
----------------------
+Files
+-----
 
->>> deck = fa.read("input.yaml")                       # doctest: +SKIP
+Extended XYZ is the default format. A negative index counts from the end, so
+the default read is the last frame of a trajectory::
+
+    atoms  = fa.read("relaxed.extxyz")           # the last frame
+    first  = fa.read("md.extxyz", index=0)
+    frames = fa.read_frames("md.extxyz")
+
+    fa.write("md.extxyz", atoms, append=True)    # one frame at a time
+    fa.write("traj.extxyz", frames)              # or all of them at once
+
+Whatever the comment line carries beyond the structure lands in ``atoms.info``,
+which writes through and is written back out:
+
+>>> atoms = fa.Atoms("Ar2", [[0, 0, 0], [3.8, 0, 0]], cell=8.0, pbc=True)
+>>> atoms.info["energy"] = -1.5
+>>> "energy" in atoms.info, atoms.info["energy"]
+(True, -1.5)
+
+A YAML input file describes a *run* rather than a structure, which extended XYZ
+has no way to express, so that is read with a different function:
+
+>>> deck = fa.read_input("input.yaml")                 # doctest: +SKIP
 >>> deck.atoms, deck.simulation.md.timestep_fs         # doctest: +SKIP
 
 Attaching a calculator
@@ -134,16 +155,22 @@ from ._core import (
     Calculator,
     CalculatorError,
     CalculatorParameters,
+    BandParameters,
+    BandProfile,
     CHGNet,
     Cell,
     BFGS,
     CG,
     Allegro,
+    AutoNEB,
+    AutoNEBResult,
     Barostat,
     BerendsenBarostat,
     BerendsenThermostat,
     ConjugateGradient,
     ConstraintReport,
+    Constraint,
+    ConstraintError,
     Constraints,
     Displacement,
     DistanceConstraint,
@@ -158,6 +185,10 @@ from ._core import (
     Ewald,
     EwaldEnergy,
     FileIOCalculator,
+    FixAtoms,
+    FixLine,
+    FixPlane,
+    Fire,
     Forcefield,
     ForceConstants,
     Integrator,
@@ -174,9 +205,10 @@ from ._core import (
     InputError,
     Molecule,
     MolecularDynamicsParameters,
+    NEB,
+    NEBError,
     NeighborList,
     NequIP,
-    WaterModel,
     Nose,
     NoseHoover,
     OptimizationResult,
@@ -207,10 +239,12 @@ from ._core import (
     TrajectoryWriter,
     Vasp,
     VelocityVerlet,
+    WaterModel,
     __version__,
     atomic_mass,
     atoms_from_dict,
     barostat_names,
+    closest_approach,
     conda_python,
     covalent_radius,
     detect_molecules,
@@ -220,6 +254,9 @@ from ._core import (
     kinetic_stress,
     lattice_point_group,
     make_barostat,
+    idpp_interpolate,
+    make_autoneb,
+    make_band,
     make_calculator,
     make_dynamics,
     make_integrator,
@@ -237,12 +274,19 @@ from ._core import (
     neighbor_list,
     number_from_symbol,
     optimize,
+    parse_extxyz,
+    parse_extxyz_frames,
     parse_yaml,
     parse_yaml_file,
     pressure_from_stress,
     read,
+    append,
     read_atoms,
-    read_string,
+    read_extxyz,
+    read_extxyz_frames,
+    read_frames,
+    read_input,
+    read_input_string,
     register_calculator,
     register_optimizer,
     registered_calculators,
@@ -260,7 +304,9 @@ from ._core import (
     water_topology,
     symbol_from_number,
     thermostat_names,
+    to_extxyz,
     to_yaml,
+    write_yaml,
     total_stress,
     units,
     vasp_species_layout,
@@ -273,6 +319,8 @@ __all__ = [
     "CG",
     "LBFGS",
     "Allegro",
+    "AutoNEB",
+    "AutoNEBResult",
     "Barostat",
     "BerendsenBarostat",
     "BerendsenThermostat",
@@ -283,10 +331,16 @@ __all__ = [
     "Calculator",
     "CalculatorError",
     "CalculatorParameters",
+    "BandParameters",
+    "BandProfile",
     "CHGNet",
     "Cell",
     "Espresso",
     "FileIOCalculator",
+    "FixAtoms",
+    "FixLine",
+    "FixPlane",
+    "Fire",
     "InputDeck",
     "InputError",
     "LennardJones",
@@ -299,6 +353,8 @@ __all__ = [
     "MolecularDynamicsParameters",
     "ConjugateGradient",
     "ConstraintReport",
+    "Constraint",
+    "ConstraintError",
     "Constraints",
     "Displacement",
     "DistanceConstraint",
@@ -316,6 +372,8 @@ __all__ = [
     "Integrator",
     "Langevin",
     "Leapfrog",
+    "NEB",
+    "NEBError",
     "NeighborList",
     "NequIP",
     "Nose",
@@ -352,6 +410,7 @@ __all__ = [
     "atomic_mass",
     "atoms_from_dict",
     "barostat_names",
+    "closest_approach",
     "conda_python",
     "covalent_radius",
     "detect_molecules",
@@ -362,6 +421,9 @@ __all__ = [
     "kinetic_stress",
     "lattice_point_group",
     "make_barostat",
+    "idpp_interpolate",
+    "make_autoneb",
+    "make_band",
     "make_calculator",
     "make_dynamics",
     "make_integrator",
@@ -379,12 +441,19 @@ __all__ = [
     "neighbor_list",
     "number_from_symbol",
     "optimize",
+    "parse_extxyz",
+    "parse_extxyz_frames",
     "parse_yaml",
     "parse_yaml_file",
     "pressure_from_stress",
     "read",
+    "append",
     "read_atoms",
-    "read_string",
+    "read_extxyz",
+    "read_extxyz_frames",
+    "read_frames",
+    "read_input",
+    "read_input_string",
     "register_calculator",
     "register_optimizer",
     "registered_calculators",
@@ -403,7 +472,9 @@ __all__ = [
     "symbol_from_number",
     "thermostat_names",
     "to_ase",
+    "to_extxyz",
     "to_yaml",
+    "write_yaml",
     "total_stress",
     "units",
     "vasp_species_layout",

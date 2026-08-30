@@ -494,9 +494,10 @@ FA_TEST(registry_builds_the_built_in_optimizers) {
     FA_CHECK(make_optimizer("conjugate_gradient")->name() == "cg");
     FA_CHECK(make_optimizer("L-BFGS")->name() == "lbfgs");
     FA_CHECK(make_optimizer("BFGS")->name() == "bfgs");
+    FA_CHECK(make_optimizer("FIRE")->name() == "fire");
 
     FA_CHECK_THROWS(make_optimizer("newton"), OptimizerError);
-    FA_CHECK(registered_optimizers().size() == 4);
+    FA_CHECK(registered_optimizers().size() == 5);
 }
 
 FA_TEST(registry_merges_the_typed_input_file_fields) {

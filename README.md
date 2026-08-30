@@ -31,15 +31,17 @@ atoms.positions += 0.01                     # writes into the C++ buffer
 
 ```
 include/fastatoms/     public headers (the C++ API)
-  core/                vec3, cell, atoms, neighbor_list, elements, units
-  io/                  parameters, yaml_input
+  core/                vec3, cell, atoms, constraints, neighbor_list, elements,
+                       units
+  io/                  extxyz (the default format), formats, parameters, yaml_input
   calculators/         calculator, file_io_calculator, vasp, espresso, siesta,
                        mlip (base), mlip_torch, mlip_worker, mlip_models
-  optimize/            optimizer, sd, cg, bfgs, lbfgs, line_search, variables
+  optimize/            optimizer, sd, cg, bfgs, lbfgs, fire, line_search, variables
   forcefield/          topology, water (SPC, SPC/E, TIP3P), ewald, forcefield
   md/                  dynamics, integrator, thermostat, barostat, trajectory,
                        constraints (SHAKE/RATTLE)
   phonon/              phonons, supercell, symmetry, force_constants, eigen
+  neb/                 neb, autoneb, idpp, registry
   util/                process, text
 src/                   implementation
 python/
@@ -49,7 +51,9 @@ python/
   examples/            Python driver scripts
 tests/cpp, tests/python
 benchmarks/            head-to-head timing against ASE
-examples/              example YAML inputs and a C++ driver
+conda/                 conda recipe: meta.yaml, build.sh, bld.bat
+examples/              example YAML inputs, the `fastatoms-run` driver and
+                       `fastatoms-interpolate`
 cmake/                 dependency resolution and the installed package config
 ```
 
@@ -83,7 +87,7 @@ pip install .
 | --- | --- | --- |
 | `FASTATOMS_BUILD_PYTHON` | `ON` | Build the pybind11 extension |
 | `FASTATOMS_BUILD_TESTS` | `ON` | Build the C++ test suite |
-| `FASTATOMS_BUILD_EXAMPLES` | `ON` | Build the `fastatoms-run` driver |
+| `FASTATOMS_BUILD_EXAMPLES` | `ON` | Build `fastatoms-run` and `fastatoms-interpolate` |
 | `FASTATOMS_ENABLE_OPENMP` | `ON` | Parallelise the neighbour search |
 | `FASTATOMS_ENABLE_NATIVE` | `OFF` | `-march=native`; faster, not portable |
 | `FASTATOMS_ENABLE_LTO` | `OFF` | Link-time optimisation in release builds |
@@ -92,6 +96,115 @@ pip install .
 
 Set `FETCHCONTENT_FULLY_DISCONNECTED=ON` to forbid downloads and require system
 dependencies.
+
+## Files
+
+Extended XYZ is the default. It carries what a simulation produces — many
+frames, per-atom forces and velocities, a cell, per-frame energies — in a form
+every other atomistic code already reads.
+
+```python
+atoms  = fa.read("relaxed.extxyz")          # the last frame
+first  = fa.read("md.extxyz", index=0)
+frames = fa.read_frames("md.extxyz")        # all of them
+
+fa.write("out.extxyz", atoms)
+fa.write("out.extxyz", atoms, append=True)  # one more frame
+fa.write("traj.extxyz", frames)             # a whole trajectory at once
+```
+
+The extension picks the format, and anything unrecognised — `dump`,
+`trajectory.out` — is read as extended XYZ, which is what "the default" has to
+mean to be worth saying.
+
+### What the comment line carries
+
+```
+3
+Lattice="10 0 0 0 11 0 0 0 12" Properties=species:S:1:pos:R:3:forces:R:3 pbc="T T F" energy=-1.5
+O   0.000  0.000  0.000    0.10 -0.20  0.30
+H   0.958  0.000  0.000   -0.05  0.10  0.00
+H  -0.240  0.927  0.000   -0.05  0.10  0.00
+```
+
+`Lattice` becomes the cell (nine numbers, or three for a diagonal one), `pbc`
+the boundary conditions, and `Properties` says what the columns are:
+`species`, `pos`, `forces`, `velo`, `momenta`, `masses`, `charges`, `tags`, and
+anything else becomes a per-atom array of its own name. Everything else on the
+line — `energy`, a step number, a label — lands in `atoms.info`, a
+write-through mapping shaped like ASE's:
+
+```python
+atoms.info["energy"]          # -1.5
+atoms.info["step"] = 7        # sticks, and is written back out
+```
+
+A plain `.xyz` file with a free-form comment and no `Properties` reads too: the
+columns are then the historical `species` and `pos`.
+
+### Numbers come back the way they went in
+
+Real values are written in the shortest text that reads back as *exactly* the
+same double. That is not a compromise between size and accuracy, it is both:
+`0.1` is shorter than twelve fixed significant digits and, unlike them, exact.
+`precision=` trades it for a smaller file when a trajectory is long and the
+last digits do not matter.
+
+### Trajectories
+
+Appending is what the format is for, and what molecular dynamics and geometry
+optimization need. The C++ writer holds the file open across frames:
+
+```cpp
+fastatoms::io::ExtxyzWriter writer("md.extxyz");
+for (...) {
+    writer.write(atoms, info);   // buffered, one open for the whole run
+}
+```
+
+Reading back does not require holding the file in memory. The reader maps it
+and hands out one frame at a time, and an index over the frame offsets makes
+`at(-1)` cheap on a file with a million of them:
+
+```cpp
+fastatoms::io::ExtxyzReader reader("md.extxyz");
+Atoms frame;
+while (reader.next(frame)) { ... }
+reader.size();       // frames, from one scan of the newlines
+reader.at(-1);       // the last
+```
+
+### Speed
+
+The reader maps the file rather than copying it, scans with pointers rather
+than streams, and converts with `std::from_chars`, which neither allocates nor
+consults the locale. Measured on one frame of a million argon atoms with
+forces, 51 MB, on an Apple M-series laptop:
+
+| | throughput |
+| --- | ---: |
+| write | 173 MB/s |
+| read | 326 MB/s |
+| read, one `istringstream` per line | 63 MB/s |
+
+The naive implementation is the one everybody writes first; it is 5.2× slower,
+and the difference is what makes a million-atom trajectory worth reading at
+all.
+
+### YAML has not gone away
+
+It cannot: an extended XYZ file has nowhere to say which calculator to attach
+or how long to integrate for, so an input deck is still YAML and is still how a
+*run* is described.
+
+```python
+deck = fa.read_input("run.yaml")     # an InputDeck: structure + simulation
+atoms = fa.read("structure.extxyz")  # just a structure
+```
+
+What changed is the default for structures, which is most reading and nearly
+all writing. `fa.read` now returns `Atoms` for any format; the deck reader is
+`fa.read_input`.
 
 ## The input format
 
@@ -107,7 +220,7 @@ structure:
   positions: [[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]]
 
 simulation:
-  task: md                          # single_point | md | optimize
+  task: md                          # single_point | md | optimize | phonon | neb
   calculator:
     name: lennard_jones
     parameters: {epsilon: 0.0103, sigma: 3.4, cutoff: 8.5}
@@ -143,6 +256,10 @@ arrays stay empty until first written and follow the atoms through `extend`,
 slicing and `repeat`. ASE-style methods (`get_positions`, `get_scaled_positions`,
 `wrap`, `center`, `rotate`, `get_distance(..., mic=True)`, `repeat`, `__getitem__`
 with slices and boolean masks) sit alongside Python properties.
+
+**`Constraint`** — `FixAtoms`, `FixLine` and `FixPlane`, attached to an `Atoms`
+and respected by the optimizers, the dynamics and the band alike. See
+[Constraints](#constraints).
 
 **`Cell`** — lattice vectors as rows, cached inverse, volume, lengths, angles,
 perpendicular widths, reciprocal vectors, and an exact minimum-image search
@@ -261,9 +378,90 @@ Because VASP requires atoms grouped by species, `fa.Vasp` reorders them in the
 POSCAR and permutes the forces back, so what you read matches the order you
 gave.
 
+## Constraints
+
+Constraints restrict how atoms may move, and everything that moves them obeys.
+
+```python
+atoms.constraints = [
+    fa.FixAtoms(range(16)),         # the substrate: frozen entirely
+    fa.FixLine([16], "z"),          # an adatom, free only along z
+    fa.FixPlane([17], [1, 1, 0]),   # held to a plane, free within it
+]
+```
+
+| | motion left | degrees of freedom removed |
+| --- | --- | ---: |
+| `fa.FixAtoms(indices)` | none | 3 per atom |
+| `fa.FixLine(indices, direction)` | along `direction` | 2 per atom |
+| `fa.FixPlane(indices, normal)` | perpendicular to `normal` | 1 per atom |
+
+Indices can be a sequence, a `range`, or a boolean `mask=`; a direction can be
+`"x"`, `"y"`, `"z"` or a vector, which is normalised for you. Attach with
+`atoms.constraints = [...]` (a single constraint need not be wrapped in a
+list), add to the list with `atoms.add_constraint(...)`, and remove everything
+with `atoms.clear_constraints()`.
+
+The line and the plane pass through wherever the atom already is, because it is
+the *displacement* that is constrained, not the position: attaching
+`FixPlane([3], "z")` holds atom 3 at its current height rather than teleporting
+it to `z = 0`.
+
+### Where they act
+
+A constraint answers three questions - what may a force do, what may a
+displacement do, what may a velocity do - and it has to answer all three
+consistently. Removing a component from the force alone is the classic mistake:
+the atom then stays put in a relaxation and drifts in dynamics, because it kept
+whatever velocity it started with.
+
+- **Forces** are projected on the way out of `get_forces()`, so every consumer
+  sees them constrained. The calculator's own `results` stay raw — they are
+  what the model said, and reading them back should show that.
+- **Velocities** are projected on the way *in*, in `set_momenta` and
+  `set_velocities`. Between the two, every thermostat, barostat, integrator and
+  velocity initialiser is covered without having to know constraints exist — a
+  frozen atom handed a Maxwell–Boltzmann draw does not quietly wander off.
+- **Positions** are projected by `atoms.move_to(...)`, which is what the
+  optimizers and integrators use. Plain `atoms.positions = ...` stays
+  unconstrained, because building a structure is not a move.
+- **The band** projects again after its own tangent projection, since the
+  spring term and the climbing image's reversed component are under no
+  obligation to respect anything.
+- **Degrees of freedom** are subtracted before the temperature is computed, so
+  a thermostat holds the system at the temperature you asked for.
+
+### Counting degrees of freedom
+
+`atoms.constrained_degrees_of_freedom()` measures what the projection actually
+removes rather than summing what each constraint claims, so an atom named twice
+is not charged twice:
+
+```python
+atoms.constraints = [fa.FixAtoms([0]), fa.FixPlane([0], "z")]
+atoms.constrained_degrees_of_freedom()      # 3 - the plane adds nothing
+atoms.constraints = [fa.FixPlane([0], "z"), fa.FixPlane([0], "x")]
+atoms.constrained_degrees_of_freedom()      # 2 - two planes leave a line
+```
+
+The count is obtained by pushing the three unit directions of every atom
+through the same projection the rest of the code enforces and counting how many
+survive, so it cannot disagree with what is actually applied.
+
+### Not the same as SHAKE and RATTLE
+
+The rigid-geometry constraints of [the water models](#rigid-geometry-shake-and-rattle)
+are a different thing: `DistanceConstraint` is holonomic, couples atoms to each
+other, and needs an iterative solver. These are linear projections, exact in one
+step. The two compose — rigid water molecules on a frozen slab is both at once.
+
+`fa.NEB(..., fix=[...])` also still exists. It is a shorthand that holds atoms
+for that band only; attaching a `FixAtoms` to the images is the general
+mechanism and does the same thing.
+
 ## Geometry optimization
 
-Four algorithms, all written from scratch — no external linear algebra or
+Five algorithms, all written from scratch — no external linear algebra or
 optimization library is used anywhere in the module.
 
 ```python
@@ -279,10 +477,19 @@ print(result.converged, result.steps, result.evaluations, result.energy)
 | `fa.ConjugateGradient` | `-g/α + β d_prev` | one vector | large systems, cheap |
 | `fa.BFGS` | `-H g`, dense inverse Hessian | O(n²) | up to a few thousand DOF |
 | `fa.LBFGS` | two-loop recursion over `m` pairs | O(m·n) | everything larger |
+| `fa.Fire` | damped dynamics, adaptive timestep | one vector | forces with no energy |
 
 `ConjugateGradient` offers Polak–Ribière⁺ (default), Fletcher–Reeves and
 Hestenes–Stiefel via `variant=`. `BFGS` stores the *inverse* Hessian, so the
 search direction is a matrix-vector product and no linear solve is ever needed.
+
+`Fire` is the odd one out, and the reason it is here. It integrates a damped
+equation of motion — mixing the velocity toward the force direction, growing
+the timestep while going downhill and freezing on the first uphill step —
+rather than searching along a line. It therefore never needs an energy that
+the force is the gradient of, which is exactly the situation the nudged
+elastic band is in below. It is slower than L-BFGS on an ordinary relaxation
+and much harder to break.
 
 ### Convergence
 
@@ -1050,6 +1257,211 @@ then carries an rpath into that environment, so deleting it breaks
 `import fastatoms`. Without `FASTATOMS_WITH_TORCH` everything still works
 through the worker.
 
+## Reaction paths: NEB, CI-NEB and AutoNEB
+
+A band of images is strung between two relaxed endpoints and relaxed as a
+single object. What comes back is the minimum energy path and the barrier
+along it.
+
+```python
+initial, final = hollow_site(), neighbouring_hollow_site()
+
+band = fa.NEB(initial, final, images=9, k=0.5, climb=True, fix=range(16))
+band.run("fire", fmax=1e-4)
+
+profile = band.profile()
+print(profile.forward_barrier, profile.reverse_barrier, profile.highest)
+```
+
+`fa.NEB` takes two endpoints and interpolates, or a list of images you have
+prepared yourself. `images` counts the endpoints, which never move.
+
+### What the projection does
+
+Relaxing a band naively does two wrong things: the images slide downhill into
+the endpoints, and the springs holding them apart pull the path away from the
+valley floor by cutting corners. So each force is split along the local
+tangent τ̂ and only the useful half of each is kept:
+
+```
+F = F_true − (F_true·τ̂)τ̂  +  k(|R₊ − R| − |R − R₋|) τ̂
+    ⌊________________⌋       ⌊_________________________⌋
+    true force, perpendicular  spring force, parallel only
+```
+
+The tangent is the improved (upwind) estimate of Henkelman and Jónsson: it
+points at whichever neighbour is higher in energy, and interpolates between
+them only at an extremum. `tangent="bisect"` and `tangent="upwind"` select the
+older estimates, which kink on steep barriers — the default is the one you
+want.
+
+### The climbing image
+
+A plain band reports the highest image it happens to have, and an evenly
+spaced band puts no image exactly on the saddle, so the barrier comes out
+low. `climb=True` picks the highest image, drops its springs, and *inverts*
+its force along the tangent, so it walks uphill along the path while relaxing
+in every other direction. Its converged position is the saddle point itself.
+From `python/examples/neb.py`, an argon adatom hopping between hollow sites:
+
+| band | plain NEB | CI-NEB | short by |
+| ---: | ---: | ---: | ---: |
+| 4 images | 11.97 meV | 13.77 meV | 1.80 meV |
+| 6 images | 13.14 meV | 13.77 meV | 0.63 meV |
+| 8 images | 13.45 meV | 13.77 meV | 0.32 meV |
+| 10 images | 13.58 meV | 13.77 meV | 0.19 meV |
+
+The plain band creeps up on the answer; the climbing image has it at four
+images, and costs nothing extra — the same images, one of them projected
+differently. `climb_threshold=` delays the climb until the band as a whole
+has settled below a force, which is worth doing when the interpolation starts
+somewhere silly. The gate is tested against the same number `fmax` reports, so
+a run converging tighter than the threshold always starts climbing first.
+
+### AutoNEB
+
+`fa.AutoNEB` starts from a coarse band, relaxes it loosely, and then spends
+images where the path is actually interesting — inserting into the widest
+energy gap, dropping images that have become redundant, and redistributing
+the rest — before a final tight relaxation with the climbing image on.
+
+```python
+result = fa.AutoNEB(initial, final, images=4, max_images=10,
+                    fmax=1e-4, k=0.5, fix=range(16)).run("fire")
+print(result.profile.forward_barrier, result.stages, result.evaluations)
+```
+
+On the hop above this reaches the same 13.7743 meV as a fixed 10-image
+climbing band, to four decimal places, having started from four images.
+
+### Two things that will bite you
+
+**Hold the substrate.** The projected band force is not required to sum to
+zero — the component removed from one atom is not the component removed from
+another. A spectator atom therefore keeps a force the tangent knows nothing
+about, and the whole band drifts bodily along the reaction coordinate with
+nothing to restore it. `fix=` takes the indices held still in every image, and
+on a surface calculation it is not optional.
+
+**Barriers want a tighter `fmax` than geometries do.** A saddle is usually
+flat along its soft modes, so a force tolerance converts into a much larger
+energy tolerance than intuition suggests. On the hop above, 5 meV/Å leaves the
+barrier 0.13 meV short and 1 meV/Å leaves 0.01 meV; it takes 0.1 meV/Å to pin
+the last digit.
+
+### Building the starting band
+
+The endpoints are yours to relax; the images in between come from
+`fastatoms-interpolate`, which writes the multi-frame extended XYZ file the
+input deck reads:
+
+```sh
+./build/examples/fastatoms-interpolate initial.extxyz final.extxyz \
+    -n 9 --idpp -o band.extxyz
+```
+
+It reports the closest approach in every image, which is the one number that
+says whether the band is usable at all:
+
+```
+image   closest pair [A]
+    0             3.8000   (endpoint)
+    1             2.5333
+    2             1.2667
+    3             0.0000
+```
+
+A straight line between endpoints is fine when little moves and the atoms stay
+out of each other's way. When they do not — an exchange, a diffusion hop, a
+molecule turning over — it walks them straight through one another, and there
+is no recovering from that: the first force call lands at 5748 eV and the band
+never converges. `--idpp` interpolates the *pair distances* instead of the
+coordinates and then finds the coordinates that reproduce them (Smidstrup et
+al., *J. Chem. Phys.* **140**, 214106), which routes the atoms around each
+other. On the exchange above:
+
+| | closest approach | highest image | NEB result |
+| --- | ---: | ---: | --- |
+| straight line | 0.000 Å | 5748 eV | never converges |
+| `--idpp` | 3.725 Å | −0.028 eV | converges in 117 steps |
+
+Available from Python as `fa.idpp_interpolate(initial, final, images)` and
+`fa.closest_approach(atoms)`.
+
+### From the input file
+
+```yaml
+structure:                 # the initial state; `neb.initial` defaults to it
+  cell: [[15.2, 0, 0], [0, 15.2, 0], [0, 0, 24.0]]
+  pbc: xy
+  atoms: [[Ar, 1.90, 1.90, 2.70], ...]
+
+simulation:
+  task: neb
+  calculator:
+    name: lennard_jones
+    parameters: {epsilon: 0.0103, sigma: 3.40, cutoff: 9.0}
+
+  neb:
+    final: product.extxyz    # a file, or a structure written inline
+    # band: band.extxyz      # or a prepared band, which overrides both ends
+    images: 9                # counting the endpoints
+    spring_constant: 0.5
+    climb: true
+    fix: ["0-15"]            # ranges, not sixteen separate entries
+    # tangent: improved      # improved | bisect | upwind
+    # variable_springs: false
+    # climb_threshold: 0.0
+    # auto: true             # AutoNEB instead of a fixed band
+    # max_images: 11
+    # coarse_fmax: 0.2
+    # insert: energy         # energy | distance
+    # prune: false
+    # redistribute: false
+
+  optimizer: {algorithm: fire, fmax: 0.0001, max_steps: 2000}
+  output: {trajectory: band.extxyz}    # the converged band
+```
+
+`./build/examples/fastatoms-run examples/neb_argon.yaml` runs the adatom hop
+above and prints the profile:
+
+```
+image        s [A]      E-E0 [eV]  fmax [eV/A]
+   0       0.0000       0.000000        fixed
+   ...
+   4       1.9853       0.013774    3.207e-05   <- highest
+
+forward barrier : 0.013774 eV
+```
+
+`fmax` and `max_steps` come from the `optimizer:` section, including for
+AutoNEB, since that is what they control. The algorithm defaults to FIRE here
+rather than the deck-wide BFGS, for the reason below. `output.trajectory`
+receives the converged band, which is also how a run is restarted: point
+`neb.band` at what the last one wrote.
+
+### Driving it
+
+`band.run("fire")` is shorthand; any optimizer object works, and `fa.NEB` is
+itself usable as a plain objective through `positions()`, `set_positions()`
+and `forces()` if you would rather drive the loop yourself.
+
+Line searches are rejected, deliberately and loudly. The projected band force
+is not the gradient of any scalar function — the spring term is added by hand
+and the climbing image's parallel component is reversed — so there is nothing
+for a line search to minimise along its direction. Pass one and you get an
+error rather than a wrong path:
+
+```python
+band.run(fa.LBFGS(line_search="strong_wolfe"))   # NEBError
+band.run(fa.LBFGS(line_search="none"))           # fine
+band.run("fire")                                 # fine, and the default choice
+```
+
+FIRE needs no line search by construction, which is why it is the one to reach
+for here.
+
 ## Performance
 
 Design choices that matter:
@@ -1095,7 +1507,7 @@ PYTHONPATH=build/python python python/examples/lennard_jones_md.py examples/argo
 # Calculators: generated VASP/QE/SIESTA inputs, then an equation of state
 PYTHONPATH=build/python python python/examples/dft_calculator.py examples/dft_silicon.yaml
 
-# Geometry optimization: the four algorithms compared, then a cell relaxation
+# Geometry optimization: the algorithms compared, then a cell relaxation
 PYTHONPATH=build/python python python/examples/relaxation.py examples/relax_argon.yaml
 
 # Molecular dynamics: integrators, thermostats and barostats compared
@@ -1106,6 +1518,15 @@ PYTHONPATH=build/python python python/examples/phonons.py examples/phonons_argon
 
 # Machine-learning potentials: the graph, both backends, a relaxation
 PYTHONPATH=build/python python python/examples/mlip.py --model mace-off23-small.pt
+
+# Reaction paths: plain NEB against CI-NEB, then AutoNEB, on an adatom hop
+PYTHONPATH=build/python python python/examples/neb.py
+
+# The same hop from an input file, with the converged band written out
+./build/examples/fastatoms-run examples/neb_argon.yaml
+
+# Build a starting band for one, avoiding a straight line through the atoms
+./build/examples/fastatoms-interpolate initial.extxyz final.extxyz -n 9 --idpp
 
 # Rigid water: SPC/SPC/E, the Ewald split, and what the constraints buy
 PYTHONPATH=build/python python python/examples/water.py examples/water_spce.yaml
@@ -1210,6 +1631,81 @@ Every file is written as a unit: if one write fails, the ones already touched
 are restored, because half a bump is the drift the tool exists to prevent. It
 writes files and nothing else — no commit, no tag, no push.
 
+## Packaging for conda
+
+`conda/` holds a recipe that builds the C++ core, the Python extension, the
+headers and the CMake package files in one pass, and installs the lot into the
+environment. Nobody has to run CMake:
+
+```sh
+conda install -c conda-forge --override-channels conda-build
+conda build conda/ -c conda-forge --override-channels
+conda install -c local fastatoms
+```
+
+`--override-channels` keeps the resolve on conda-forge, hosted on
+anaconda.org, instead of also consulting the commercial `repo.anaconda.com`
+channels that a default `.condarc` usually lists. To publish:
+
+```sh
+anaconda upload $(conda build conda/ --output -c conda-forge --override-channels)
+```
+
+The package carries both halves, so after installing it
+
+```python
+import fastatoms as fa          # the extension, from site-packages
+```
+
+and
+
+```cmake
+find_package(FastAtoms REQUIRED) # headers and lib, from $CONDA_PREFIX
+target_link_libraries(my_code PRIVATE FastAtoms::core)
+```
+
+both work against the environment. `fastatoms-run` lands on `PATH`.
+
+### What the recipe has to get right
+
+Three things, each of which was found by building the recipe rather than by
+reading it:
+
+**No network.** `find_package(yaml-cpp)` falls back to downloading a copy when
+it finds nothing, which on a sandboxed builder fails and on an unsandboxed one
+silently vendors a dependency the package then carries invisibly.
+`FETCHCONTENT_FULLY_DISCONNECTED=ON` turns that into an error at configure
+time, so the yaml-cpp in `host:` is the one that gets used or the build stops.
+
+**The OpenMP runtime has to come from the prefix.** On macOS,
+`find_package(OpenMP)` reaches `/opt/homebrew` before the conda prefix, and the
+result builds clean, passes its tests, and is still broken: the package links a
+library conda does not ship, so it fails on machines without Homebrew and
+aborts with `OMP: Error #15` on machines with it. The recipe names the library
+outright on macOS. Linux needs none of this — conda's gcc brings its own
+libgomp and there is no second one to find.
+
+**Installed binaries need an rpath.** `fastatoms-run` links
+`@rpath/libyaml-cpp.dylib` and was installed with no `LC_RPATH` at all, so it
+could not start. `CMAKE_INSTALL_RPATH_USE_LINK_PATH=ON` fixes it. conda-build's
+relocation pass would probably have papered over this, but a prefix that is
+correct before post-processing is one less thing depending on post-processing.
+
+### Two deliberate choices
+
+The recipe produces **one package** carrying both the library and the bindings.
+conda-forge convention for a C++ library with Python bindings is to split them
+— a `libfastatoms` output with the headers, library and CMake files, and a
+`fastatoms` output with the extension — so that a C++ consumer need not pull in
+Python. Splitting is a `outputs:` block over the same `build.sh`; it is worth
+doing before submitting a feedstock, and is unnecessary noise for an internal
+channel.
+
+**LibTorch is off.** Adding pytorch to `host:` would multiply the build for a
+feature that also works out of process: machine-learning potentials still run
+through the persistent Python worker. A build that wants in-process inference
+sets `FASTATOMS_WITH_TORCH=ON` and adds `pytorch` to `host:`.
+
 ## Using the C++ library directly
 
 ```cmake
@@ -1248,7 +1744,7 @@ const double mlip_energy = deck.atoms.get_potential_energy();
 
 ## Testing
 
-`ctest` runs fourteen C++ suites and the Python suite. The neighbour list is
+`ctest` runs seventeen C++ suites and the Python suite. The neighbour list is
 checked against a brute-force O(N² × images) reference for cubic, triclinic,
 slab, isolated and smaller-than-cutoff cells; the minimum-image convention is
 checked the same way.
@@ -1296,6 +1792,62 @@ checking it is diagonal, unitary and ordered; the space-group finder against
 the known orders of the cubic, tetragonal, orthorhombic, hexagonal and
 triclinic point groups, and by applying every operation it returns and
 confirming the structure maps onto itself.
+
+The nudged elastic band is checked against a surface whose saddle point is
+known in closed form: the barrier of a tilted double well, solved by Newton
+iteration inside the test itself. The climbing image finds it to 2 × 10⁻¹⁶ eV,
+where the same band without climbing is short by 2.5 × 10⁻² — the test asserts
+both numbers, so it fails if climbing stops working *or* if the plain band
+silently starts sitting on the saddle by accident.
+
+The projection is then checked property by property, which is what catches a
+tangent that is subtly wrong rather than absent. On an evenly spaced band the
+surviving true force must be exactly perpendicular to the local tangent at
+every image; with climbing on, exactly one image — the highest — may keep a
+parallel component, and the test counts them. The springs must push along the
+path and nowhere else on a deliberately bunched band, the tangent must be a
+unit vector pointing towards the higher neighbour, and a symmetric barrier must
+relax to a symmetric profile.
+
+The constraints are checked twice over: the projections themselves, and - the
+part that actually matters - that every consumer honours them. The constrained
+force is required to equal the true gradient of the energy over the moves the
+constraints allow, checked component by component against finite differences of
+the energy, stepping and letting the constraint have its say before measuring
+the distance actually travelled. Without that property an optimizer is
+minimising one function while measuring another. Every optimizer must then
+converge a doubly constrained relaxation and leave the frozen atoms bit-for-bit
+where they started; the dynamics must do the same over three hundred steps and
+report a temperature computed with the reduced count; the band must reach the
+same barrier through a `FixAtoms` as through its own `fix=`.
+
+That optimizer test earned its place. The optimizers read the calculator's
+`Results` rather than calling `get_forces`, so constraining only the latter left
+them minimising the unconstrained gradient: the geometry came out exactly right
+and the reported force never fell, so a converged run reported failure while
+sitting on the answer. The degrees-of-freedom count is checked on overlapping
+constraints, where summing what each one claims gives four removed out of three.
+
+The interpolator is checked on the case it exists for. That a straight line
+puts two exchanging atoms exactly on top of each other is asserted, not assumed
+— if it stopped being true the IDPP tests would stop testing anything — and
+IDPP then has to separate them to better than 3 Å while leaving both endpoints
+bit-for-bit unchanged. Its objective is checked against central differences of
+its own energy, and two runs of it must agree to 10⁻¹⁵, since the nudge that
+breaks the symmetric saddle is deterministic rather than random. The `neb:`
+section of a deck is parsed, built into a band, and relaxed to the same barrier
+the hand-built band finds; the decks that must be rejected all carry a valid
+structure, so they fail for the reason under test rather than for a missing
+section.
+
+The Python suite runs a periodic channel where the straight-line interpolation
+happens to be the exact path, so every band is started from a displaced one
+instead: the images are pushed off the axis and off their spacing, and have to
+relax back to the same barrier. Without that the tests would pass on a broken
+projection. AutoNEB must agree with a fixed band of the size it grows to, and
+the three optimizers that can drive a band — FIRE, L-BFGS with the line search
+off, and steepest descent — must all reach the same saddle. A line-searching
+optimizer must be refused rather than quietly produce a wrong path.
 
 The machine-learning layer is tested without needing a model at all: a stub
 backend computes Lennard-Jones from exactly the graph a real one would receive,

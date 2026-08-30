@@ -342,7 +342,7 @@ simulation:
 
 
 def test_read_string():
-    deck = fa.read_string(INPUT)
+    deck = fa.read_input_string(INPUT)
     assert len(deck.atoms) == 2
     assert deck.atoms.get_positions()[1] == pytest.approx([1.3575] * 3)
 
@@ -358,7 +358,7 @@ def test_read_string():
 
 
 def test_document_is_a_plain_dict():
-    deck = fa.read_string(INPUT)
+    deck = fa.read_input_string(INPUT)
     assert isinstance(deck.document, dict)
     assert deck.document["simulation"]["md"]["temperature"] == 300.0
 
@@ -367,7 +367,7 @@ def test_read_and_write_files(tmp_path):
     source = tmp_path / "input.yaml"
     source.write_text(INPUT)
 
-    deck = fa.read(str(source))
+    deck = fa.read_input(str(source))
     assert len(deck.atoms) == 2
 
     out = tmp_path / "out.yaml"
@@ -379,11 +379,11 @@ def test_read_and_write_files(tmp_path):
 
 def test_input_errors_are_reported():
     with pytest.raises(fa.InputError):
-        fa.read_string("structure: {symbols: [Zz], positions: [[0, 0, 0]]}")
+        fa.read_input_string("structure: {symbols: [Zz], positions: [[0, 0, 0]]}")
     with pytest.raises(fa.InputError):
-        fa.read_string("structure: {symbols: [H], positions: [[0, 0]]}")
+        fa.read_input_string("structure: {symbols: [H], positions: [[0, 0]]}")
     with pytest.raises(fa.InputError):
-        fa.read("/nonexistent/input.yaml")
+        fa.read_input("/nonexistent/input.yaml")
     # InputError is a ValueError, so ordinary handlers catch it too.
     assert issubclass(fa.InputError, ValueError)
 
@@ -406,7 +406,7 @@ def test_to_yaml_round_trip_preserves_arrays():
     atoms.set_charges([0.4, 0.4, -0.8])
     atoms.set_tags([1, 1, 2])
     text = fa.to_yaml(atoms)
-    restored = fa.read_string(text).atoms
+    restored = fa.read_input_string(text).atoms
     assert restored.get_charges() == pytest.approx(atoms.get_charges())
     assert restored.get_tags().tolist() == [1, 1, 2]
 

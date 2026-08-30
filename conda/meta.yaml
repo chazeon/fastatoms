@@ -1,0 +1,113 @@
+{% set name = "fastatoms" %}
+{% set version = "0.1.3" %}
+
+# The version is written here by `versioning_fastatoms`, which sets it in
+# CMakeLists.txt, pyproject.toml and this file together. Do not edit it by
+# hand: `versioning_fastatoms --check` fails when the three disagree.
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  # Building from the checkout this recipe lives in. For a conda-forge feedstock
+  # replace this with the released tarball and its hash:
+  #
+  #   url: https://github.com/seixas-research/fastatoms/archive/v{{ version }}.tar.gz
+  #   sha256: <sha256 of that tarball>
+  path: ..
+
+build:
+  number: 0
+  # requires-python in pyproject.toml
+  skip: true  # [py<39]
+  # The extension links the C++ core, so a package built for one Python cannot
+  # be reused by another.
+  string: py{{ CONDA_PY }}h{{ PKG_HASH }}_{{ PKG_BUILDNUM }}
+
+requirements:
+  build:
+    # The toolchain conda-forge pins, rather than whatever is on PATH.
+    - {{ compiler('cxx') }}
+    - {{ stdlib('c') }}
+    - cmake >=3.20
+    - ninja
+    # Cross-compiling (osx-arm64 from osx-64, or aarch64 on CI) needs a
+    # build-platform interpreter to run, and the host one to target.
+    - python                                 # [build_platform != target_platform]
+    - cross-python_{{ target_platform }}     # [build_platform != target_platform]
+    - pybind11 >=2.12                        # [build_platform != target_platform]
+
+  host:
+    - python
+    - pybind11 >=2.12
+    # Found by find_package(yaml-cpp CONFIG); without it the build would try to
+    # download one, which build.sh forbids.
+    - yaml-cpp >=0.8
+    # The compiler's OpenMP runtime. Linux gets libgomp through the compiler
+    # package; macOS needs this one explicitly, and without it the build simply
+    # runs single-threaded rather than failing.
+    - llvm-openmp                            # [osx]
+    - numpy
+
+  run:
+    - python
+    - numpy >=1.20
+
+test:
+  # The Python suite is not installed with the package, so it is copied in.
+  source_files:
+    - tests/python
+  requires:
+    - pytest >=7.0
+  imports:
+    - fastatoms
+    - fastatoms.mlip
+  commands:
+    # The extension loads, reports the version the C++ core was built with, and
+    # computes something: an import test alone would pass on a library that
+    # cannot evaluate anything.
+    - python -c "import fastatoms as fa; print(fa.__version__); assert fa.__version__ == '{{ version }}'"
+    - python -c "import fastatoms as fa; a = fa.Atoms('Ar2', [[0,0,0],[3.8,0,0]], cell=12.0, pbc=True); a.calc = fa.LennardJones(); assert a.get_potential_energy() < 0"
+    # The C++ side of the package: headers, the static library and the CMake
+    # package config a downstream find_package(FastAtoms) needs.
+    - test -f $PREFIX/include/fastatoms/fastatoms.hpp                    # [unix]
+    - test -f $PREFIX/lib/cmake/FastAtoms/FastAtomsConfig.cmake          # [unix]
+    - test -f $PREFIX/share/fastatoms/mlip/worker.py                     # [unix]
+    - fastatoms-run examples/argon.yaml                                  # [unix]
+    # Both installed programs, and the second checked by what it produces
+    # rather than only by exiting zero.
+    - fastatoms-interpolate --help                                       # [unix]
+    - if not exist %LIBRARY_INC%\fastatoms\fastatoms.hpp exit 1          # [win]
+    - if not exist %LIBRARY_PREFIX%\lib\cmake\FastAtoms\FastAtomsConfig.cmake exit 1  # [win]
+    # The whole Python suite. The parts needing ASE, a trained model or the
+    # versioning command skip themselves.
+    - pytest tests/python -q
+
+about:
+  home: https://github.com/seixas-research/fastatoms
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: High-performance C++ core for atomistic simulations, driven from Python
+  description: |
+    FastAtoms gives an ASE-shaped API on top of contiguous C++ storage: an O(N)
+    neighbour list, a YAML front end, calculators driving VASP, Quantum
+    ESPRESSO and SIESTA, machine-learning potentials, a classical force field
+    with Ewald electrostatics and rigid-water constraints, geometry optimizers,
+    molecular dynamics in NVE, NVT and NPT, and harmonic phonons by finite
+    displacements.
+
+    This package carries both halves: the importable Python package and the
+    C++ library, headers and CMake package files, so `find_package(FastAtoms)`
+    works against the environment.
+
+    Built without LibTorch, so machine-learning potentials run through the
+    persistent Python worker rather than in process. A build with
+    FASTATOMS_WITH_TORCH=ON needs pytorch as a host dependency.
+  doc_url: https://github.com/seixas-research/fastatoms#readme
+  dev_url: https://github.com/seixas-research/fastatoms
+
+extra:
+  recipe-maintainers:
+    - leseixas

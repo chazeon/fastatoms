@@ -17,10 +17,75 @@
 namespace fastatoms::io {
 namespace {
 
+bool item_is_scalar(const Value& node) {
+    return node.is_string() || node.is_number();
+}
+
 std::string lowercase(std::string_view text) {
     std::string out(text);
     std::transform(out.begin(), out.end(), out.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+/// Read a list of atom indices, accepting `"4-11"` alongside plain integers.
+///
+/// A slab calculation holds a substrate of tens or hundreds of atoms, and
+/// writing those out one per entry makes the input file unreadable. Both
+/// `[0, 1, 2]` and `["0-63", 70]` are accepted, as is a bare `"0-63"`.
+std::vector<std::int64_t> parse_index_list(const Value& node, const char* what) {
+    std::vector<std::int64_t> out;
+
+    const auto add_range = [&](const std::string& text) {
+        const std::size_t dash = text.find('-', text.front() == '-' ? 1 : 0);
+        if (dash == std::string::npos) {
+            throw InputError(std::string(what) + ": '" + text +
+                             "' is not an index or an 'first-last' range");
+        }
+        const std::string first = text.substr(0, dash);
+        const std::string last = text.substr(dash + 1);
+        try {
+            const std::int64_t lo = std::stoll(first);
+            const std::int64_t hi = std::stoll(last);
+            if (lo < 0 || hi < lo) {
+                throw InputError(std::string(what) + ": '" + text + "' is not a forward range");
+            }
+            for (std::int64_t k = lo; k <= hi; ++k) {
+                out.push_back(k);
+            }
+        } catch (const std::invalid_argument&) {
+            throw InputError(std::string(what) + ": '" + text + "' is not a range of integers");
+        } catch (const std::out_of_range&) {
+            throw InputError(std::string(what) + ": '" + text + "' is out of range");
+        }
+    };
+
+    const auto add = [&](const Value& item) {
+        if (item.is_string()) {
+            add_range(item.as_string());
+        } else if (item.is_number()) {
+            const double value = item.as_double();
+            if (value != std::floor(value) || value < 0.0) {
+                throw InputError(std::string(what) + ": indices must be whole and not negative");
+            }
+            out.push_back(static_cast<std::int64_t>(value));
+        } else {
+            throw InputError(std::string(what) + ": expected integers or 'first-last' ranges");
+        }
+    };
+
+    if (item_is_scalar(node)) {
+        add(node);
+    } else if (node.is_list()) {
+        for (const Value& item : node.as_list()) {
+            add(item);
+        }
+    } else {
+        throw InputError(std::string(what) + ": expected a list of indices");
+    }
+
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
 }
 
@@ -614,6 +679,71 @@ SimulationParameters simulation_from_value_impl(const Value& node) {
         }
         if (params.phonon.symmetry_tolerance <= 0.0) {
             throw InputError("phonons.symmetry_tolerance: must be positive");
+        }
+    }
+
+    if (const Value& band = first_of(node, {"neb", "band", "reaction_path"}); !band.is_null()) {
+        params.neb.parameters = band;
+
+        // An endpoint is either a path to a file or a structure written out
+        // in place, so that a small system needs only one document.
+        if (const Value& start = first_of(band, {"initial", "start", "reactant"});
+            start.is_map()) {
+            params.neb.initial_structure = start;
+        } else {
+            params.neb.initial = start.value_or("");
+        }
+        if (const Value& stop = first_of(band, {"final", "end", "product"}); stop.is_map()) {
+            params.neb.final_structure = stop;
+        } else {
+            params.neb.final = stop.value_or("");
+        }
+        params.neb.band = first_of(band, {"band", "images_file", "path"}).value_or("");
+
+        params.neb.images =
+            first_of(band, {"images", "nimages"}).value_or(static_cast<std::int64_t>(7));
+        params.neb.spring_constant =
+            first_of(band, {"spring_constant", "k", "spring"}).value_or(0.1);
+        params.neb.climbing = first_of(band, {"climb", "climbing", "cineb"}).value_or(false);
+        params.neb.climb_threshold =
+            first_of(band, {"climb_threshold", "climbing_threshold"}).value_or(0.0);
+        params.neb.tangent = lowercase(first_of(band, {"tangent", "tangent_estimate"})
+                                           .value_or("improved"));
+        params.neb.variable_springs =
+            first_of(band, {"variable_springs", "variable_k"}).value_or(false);
+        params.neb.spring_softening =
+            first_of(band, {"spring_softening", "k_min_fraction"}).value_or(0.5);
+        params.neb.minimum_image =
+            first_of(band, {"minimum_image", "wrap"}).value_or(true);
+
+        if (const Value& fix = first_of(band, {"fix", "fixed", "fixed_atoms", "constrain"});
+            !fix.is_null()) {
+            params.neb.fixed_atoms = parse_index_list(fix, "neb.fix");
+        }
+
+        params.neb.automatic = first_of(band, {"auto", "autoneb", "adaptive"}).value_or(false);
+        params.neb.max_images =
+            first_of(band, {"max_images", "maximum_images"}).value_or(static_cast<std::int64_t>(11));
+        params.neb.coarse_fmax =
+            first_of(band, {"coarse_fmax", "growing_fmax"}).value_or(0.2);
+        params.neb.insert = lowercase(first_of(band, {"insert", "insertion"}).value_or("energy"));
+        params.neb.prune = first_of(band, {"prune", "remove"}).value_or(false);
+        params.neb.prune_tolerance = first_of(band, {"prune_tolerance"}).value_or(0.01);
+        params.neb.redistribute =
+            first_of(band, {"redistribute", "respace"}).value_or(false);
+
+        if (params.neb.band.empty() && params.neb.final.empty() &&
+            params.neb.final_structure.is_null()) {
+            throw InputError("neb: needs a 'final' endpoint, or a 'band' file to start from");
+        }
+        if (params.neb.images < 3) {
+            throw InputError("neb.images: a band needs at least 3 images");
+        }
+        if (params.neb.spring_constant <= 0.0) {
+            throw InputError("neb.spring_constant: must be positive");
+        }
+        if (params.neb.max_images < params.neb.images) {
+            throw InputError("neb.max_images: must not be smaller than neb.images");
         }
     }
 

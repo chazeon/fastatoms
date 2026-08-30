@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(FastAtoms
-    VERSION 0.1.2
+    VERSION 0.1.3
     DESCRIPTION "High-performance C++ core for atomistic simulations, driven from Python"
     LANGUAGES CXX)
 
@@ -60,9 +60,12 @@ include(cmake/FastAtomsDependencies.cmake)
 # ---------------------------------------------------------------------------
 set(FASTATOMS_CORE_SOURCES
     src/core/atoms.cpp
+    src/core/constraints.cpp
     src/core/cell.cpp
     src/core/elements.cpp
     src/core/neighbor_list.cpp
+    src/io/extxyz.cpp
+    src/io/formats.cpp
     src/io/parameters.cpp
     src/io/yaml_input.cpp
     src/calculators/atoms_calculator.cpp
@@ -98,6 +101,11 @@ set(FASTATOMS_CORE_SOURCES
     src/phonon/symmetry.cpp
     src/optimize/bfgs.cpp
     src/optimize/conjugate_gradient.cpp
+    src/neb/autoneb.cpp
+    src/neb/idpp.cpp
+    src/neb/neb.cpp
+    src/neb/registry.cpp
+    src/optimize/fire.cpp
     src/optimize/lbfgs.cpp
     src/optimize/line_search.cpp
     src/optimize/optimizer.cpp
@@ -113,10 +121,13 @@ set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/core/atoms.hpp
     include/fastatoms/core/cell.hpp
     include/fastatoms/core/constraint.hpp
+    include/fastatoms/core/constraints.hpp
     include/fastatoms/core/elements.hpp
     include/fastatoms/core/neighbor_list.hpp
     include/fastatoms/core/units.hpp
     include/fastatoms/core/vec3.hpp
+    include/fastatoms/io/extxyz.hpp
+    include/fastatoms/io/formats.hpp
     include/fastatoms/io/parameters.hpp
     include/fastatoms/io/yaml_input.hpp
     include/fastatoms/calculators/calculator.hpp
@@ -152,6 +163,11 @@ set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/phonon/symmetry.hpp
     include/fastatoms/optimize/bfgs.hpp
     include/fastatoms/optimize/conjugate_gradient.hpp
+    include/fastatoms/neb/autoneb.hpp
+    include/fastatoms/neb/idpp.hpp
+    include/fastatoms/neb/neb.hpp
+    include/fastatoms/neb/registry.hpp
+    include/fastatoms/optimize/fire.hpp
     include/fastatoms/optimize/lbfgs.hpp
     include/fastatoms/optimize/line_search.hpp
     include/fastatoms/optimize/optimizer.hpp

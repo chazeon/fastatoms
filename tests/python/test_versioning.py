@@ -76,6 +76,13 @@ def project(tmp_path):
         '    VERSION 0.1.2\n'
         '    DESCRIPTION "test"\n'
         '    LANGUAGES CXX)\n', encoding="utf-8")
+    (tmp_path / "conda").mkdir()
+    (tmp_path / "conda" / "meta.yaml").write_text(
+        '{% set name = "fastatoms" %}\n'
+        '{% set version = "0.1.1" %}\n\n'
+        'package:\n'
+        '  name: {{ name|lower }}\n'
+        '  version: {{ version }}\n', encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(
         '[project]\n'
         'name = "fastatoms"\n'
@@ -181,13 +188,25 @@ def test_sync_repairs_drift_from_the_source_of_truth(project):
     assert run(project, "--sync").returncode == 0
     assert 'version = "0.1.2"' in (project / "pyproject.toml").read_text()
     assert "VERSION 0.1.2" in (project / "CMakeLists.txt").read_text()
+    assert 'set version = "0.1.2"' in (project / "conda" / "meta.yaml").read_text()
     assert run(project, "--check").returncode == 0
+
+
+def test_the_conda_recipe_takes_the_pep440_spelling(project):
+    """`-` separates fields in a conda package filename, so a semver
+    pre-release cannot be written there at all."""
+    assert run(project, "--set", "1.0.0-rc.1").returncode == 0
+    recipe = (project / "conda" / "meta.yaml").read_text()
+    assert 'set version = "1.0.0rc1"' in recipe
+    # The name assignment on the line above must not have been touched.
+    assert 'set name = "fastatoms"' in recipe
 
 
 def test_a_bump_writes_every_file(project):
     assert run(project, "--minor").returncode == 0
     assert "VERSION 0.2.0" in (project / "CMakeLists.txt").read_text()
     assert 'version = "0.2.0"' in (project / "pyproject.toml").read_text()
+    assert 'set version = "0.2.0"' in (project / "conda" / "meta.yaml").read_text()
     assert run(project, "--check").returncode == 0
 
 
@@ -198,12 +217,18 @@ def test_a_prerelease_is_written_in_each_dialect(project):
     assert 'version = "1.0.0rc1"' in (project / "pyproject.toml").read_text()
 
 
+def snapshot(root):
+    """Every file in the tree, so a nested recipe directory is covered too."""
+    return {str(path.relative_to(root)): path.read_text()
+            for path in sorted(root.rglob("*")) if path.is_file()}
+
+
 def test_dry_run_writes_nothing(project):
-    before = {path.name: path.read_text() for path in project.iterdir()}
+    before = snapshot(project)
     finished = run(project, "--major", "--dry-run")
     assert finished.returncode == 0
     assert "Nothing was written" in finished.stdout
-    assert {path.name: path.read_text() for path in project.iterdir()} == before
+    assert snapshot(project) == before
 
 
 def test_surrounding_formatting_is_left_alone(project):
@@ -238,6 +263,7 @@ def test_a_failed_write_leaves_nothing_half_applied(project):
 
 def test_a_missing_optional_file_is_skipped(project, tool):
     (project / "pyproject.toml").unlink()
+    (project / "conda" / "meta.yaml").unlink()
     targets = tool.collect_targets(str(project))
     assert [target.relpath for target in targets] == ["CMakeLists.txt"]
     assert run(project, "--patch").returncode == 0

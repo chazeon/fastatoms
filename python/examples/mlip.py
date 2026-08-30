@@ -186,7 +186,7 @@ def drive_from_the_input_file(path: str) -> None:
     if not os.path.exists(path):
         print(f"\nskipped: no such file")
         return
-    deck = fa.read(path)
+    deck = fa.read_input(path)
     print(f"\nstructure : {deck.atoms!r}")
     print(f"calculator: {deck.simulation.calculator.name} "
           f"{deck.simulation.calculator.parameters}")
