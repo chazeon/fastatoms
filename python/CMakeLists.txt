@@ -7,6 +7,10 @@ set(FASTATOMS_BINDING_SOURCES
     bindings/module.cpp
     bindings/helpers.cpp
     bindings/bind_atoms.cpp
+    bindings/bind_analysis.cpp
+    bindings/bind_electronic.cpp
+    bindings/bind_build.cpp
+    bindings/bind_symmetry.cpp
     bindings/bind_constraints.cpp
     bindings/bind_calculators.cpp
     bindings/bind_cell.cpp

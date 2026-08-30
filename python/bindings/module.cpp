@@ -47,6 +47,15 @@ it re-exports everything here alongside a few pure-Python conveniences.
         new py::exception<fastatoms::neb::NEBError>(m, "NEBError", PyExc_RuntimeError);
     static auto* const constraint_error =
         new py::exception<fastatoms::ConstraintError>(m, "ConstraintError", PyExc_ValueError);
+    static auto* const build_error =
+        new py::exception<fastatoms::build::BuildError>(m, "BuildError", PyExc_ValueError);
+    static auto* const symmetry_error = new py::exception<fastatoms::symmetry::SymmetryError>(
+        m, "SymmetryError", PyExc_RuntimeError);
+    static auto* const analysis_error = new py::exception<fastatoms::analysis::AnalysisError>(
+        m, "AnalysisError", PyExc_ValueError);
+    static auto* const electronic_error =
+        new py::exception<fastatoms::electronic::ElectronicError>(m, "ElectronicError",
+                                                                  PyExc_ValueError);
     py::register_exception_translator([](std::exception_ptr p) {
         try {
             if (p) {
@@ -64,6 +73,14 @@ it re-exports everything here alongside a few pure-Python conveniences.
             py::set_error(*neb_error, e.what());
         } catch (const fastatoms::ConstraintError& e) {
             py::set_error(*constraint_error, e.what());
+        } catch (const fastatoms::build::BuildError& e) {
+            py::set_error(*build_error, e.what());
+        } catch (const fastatoms::symmetry::SymmetryError& e) {
+            py::set_error(*symmetry_error, e.what());
+        } catch (const fastatoms::analysis::AnalysisError& e) {
+            py::set_error(*analysis_error, e.what());
+        } catch (const fastatoms::electronic::ElectronicError& e) {
+            py::set_error(*electronic_error, e.what());
         }
     });
 
@@ -77,6 +94,10 @@ it re-exports everything here alongside a few pure-Python conveniences.
     fastatoms::bindings::bind_mlip(m);
     fastatoms::bindings::bind_forcefield(m);
     fastatoms::bindings::bind_neb(m);
+    fastatoms::bindings::bind_build(m);
+    fastatoms::bindings::bind_symmetry(m, atoms_class);
+    fastatoms::bindings::bind_analysis(m);
+    fastatoms::bindings::bind_electronic(m);
     fastatoms::bindings::bind_optimize(m, atoms_class, deck_class);
     fastatoms::bindings::bind_md(m, atoms_class, deck_class);
     fastatoms::bindings::bind_phonon(m, deck_class);

@@ -5,7 +5,18 @@
 /// \brief Umbrella header: includes the whole public API.
 
 #include "fastatoms/build/bulk.hpp"
+#include "fastatoms/build/cluster.hpp"
+#include "fastatoms/build/nanotube.hpp"
 #include "fastatoms/build/twod.hpp"
+#include "fastatoms/electronic/bandpath.hpp"
+#include "fastatoms/electronic/bands.hpp"
+#include "fastatoms/electronic/dos.hpp"
+#include "fastatoms/analysis/rdf.hpp"
+#include "fastatoms/analysis/structure_factor.hpp"
+#include "fastatoms/analysis/surface_tension.hpp"
+#include "fastatoms/symmetry/pointgroup.hpp"
+#include "fastatoms/symmetry/spacegroup.hpp"
+#include "fastatoms/symmetry/standardize.hpp"
 #include "fastatoms/calculators/calculator.hpp"
 #include "fastatoms/calculators/file_io_calculator.hpp"
 #include "fastatoms/calculators/lennard_jones.hpp"

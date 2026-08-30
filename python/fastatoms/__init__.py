@@ -148,6 +148,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from ._core import analysis
+from ._core import build
+from ._core import electronic
+from ._core import symmetry
 from ._core import (
     MAX_ATOMIC_NUMBER,
     Atom,
@@ -156,6 +160,10 @@ from ._core import (
     CalculatorError,
     CalculatorParameters,
     BandParameters,
+    AnalysisError,
+    ElectronicError,
+    BuildError,
+    SymmetryError,
     BandProfile,
     CHGNet,
     Cell,
@@ -315,6 +323,10 @@ from ._core import (
 )
 
 __all__ = [
+    "analysis",
+    "build",
+    "electronic",
+    "symmetry",
     "BFGS",
     "CG",
     "LBFGS",
@@ -332,6 +344,10 @@ __all__ = [
     "CalculatorError",
     "CalculatorParameters",
     "BandParameters",
+    "AnalysisError",
+    "ElectronicError",
+    "BuildError",
+    "SymmetryError",
     "BandProfile",
     "CHGNet",
     "Cell",

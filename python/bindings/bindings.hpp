@@ -253,6 +253,14 @@ void bind_mlip(py::module_& m);
 void bind_forcefield(py::module_& m);
 /// The nudged elastic band and AutoNEB.
 void bind_neb(py::module_& m);
+/// The structure builders, in their own submodule.
+void bind_build(py::module_& m);
+/// Crystallographic symmetry, in its own submodule.
+void bind_symmetry(py::module_& m, py::class_<Atoms>& atoms);
+/// Trajectory analysis, in its own submodule.
+void bind_analysis(py::module_& m);
+/// Band structures and densities of state.
+void bind_electronic(py::module_& m);
 
 /// Convert a Python property specification - a `Property`, a string, or a
 /// sequence of either - into the C++ list. `None` means the default set.

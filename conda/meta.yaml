@@ -1,5 +1,5 @@
 {% set name = "fastatoms" %}
-{% set version = "0.2.0" %}
+{% set version = "0.2.1" %}
 
 # The version is written here by `versioning_fastatoms`, which sets it in
 # CMakeLists.txt, pyproject.toml and this file together. Do not edit it by

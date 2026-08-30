@@ -39,10 +39,13 @@
 *.out
 *.app
 
-# Build directories
-build/
-Build/
-build-*/
+# Build directories. Anchored with a leading slash so they match only the one
+# at the repository root: without it, `build/` also swallows the source
+# directories `include/fastatoms/build/` and `src/build/`, and new files there
+# are silently never committed.
+/build/
+/Build/
+/build-*/
 
 # CMake generated files
 CMakeFiles/

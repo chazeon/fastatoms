@@ -1,36 +1,177 @@
 # FastAtoms
 
-A high-performance C++ core for atomistic simulations, driven from Python.
+[![Build](https://github.com/seixas-research/fastatoms/actions/workflows/ci.yml/badge.svg)](https://github.com/seixas-research/fastatoms/actions/workflows/ci.yml)
+[![Conda](https://img.shields.io/conda/vn/conda-forge/fastatoms.svg)](https://anaconda.org/conda-forge/fastatoms)
+[![PyPI](https://img.shields.io/pypi/v/fastatoms.svg)](https://pypi.org/project/fastatoms/)
+[![Python](https://img.shields.io/pypi/pyversions/fastatoms.svg)](https://pypi.org/project/fastatoms/)
+[![Coverage](https://codecov.io/gh/seixas-research/fastatoms/branch/main/graph/badge.svg)](https://codecov.io/gh/seixas-research/fastatoms)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-FastAtoms gives you an ASE-shaped API — `Atoms`, `Cell`, chemical symbols,
-periodic boundary conditions — on top of contiguous C++ storage, an O(N)
-neighbour list, a YAML front end for structures and run settings, calculators
-that drive VASP, Quantum ESPRESSO and SIESTA, machine-learning potentials that
-run through LibTorch with no interpreter in the loop, a classical force field
-with Ewald electrostatics and rigid-water constraints, geometry optimizers that
-relax positions and cells, molecular dynamics in NVE, NVT and NPT, and harmonic
-phonons by finite displacements with a symmetry-reduced displacement set. The
-Python layer is a thin binding:
-`atoms.positions` is a zero-copy numpy view straight into the C++ buffer, so a
-Python script can drive a simulation without paying for the convenience.
+> **A high-performance C++ core for atomistic simulations, driven from Python.**
+
+---
+
+## Introduction
+
+FastAtoms is an atomistic simulation toolkit whose numerical work happens in
+C++ and whose interface looks like ASE. It is built on three commitments.
+
+**A C++ backend that does the work.** Every per-atom quantity is one contiguous
+`std::vector`, stored atom-major. The neighbour search bins atoms with a
+counting sort and is linear in the number of atoms — flat at about 0.5 µs per
+atom from 512 to 64,000 — releasing the GIL while it runs. Force kernels take
+raw pointers.
+
+**No external mathematical dependencies.** There is no BLAS, no LAPACK, no FFT
+library, no spglib. The optimizers, the eigensolvers, the Ewald summation, the
+space-group determination, the linear tetrahedron integration and the symmetry
+detection are all written here, from scratch. The only third-party libraries
+are yaml-cpp for the input format and pybind11 for the bindings — both resolved
+from the system when present and vendored only as a fallback, so a plain
+checkout builds as-is.
+
+**A Python interface that costs nothing.** `atoms.positions` is a zero-copy
+numpy view straight into the C++ buffer; analysis results come back as
+read-only views onto the C++ storage rather than copies. A Python script drives
+the simulation without paying for the convenience.
 
 ```python
 import fastatoms as fa
 
-deck = fa.read("examples/argon.yaml")       # structure + run settings
-atoms = deck.atoms.repeat(3, 3, 3)          # 108-atom supercell
+atoms = fa.build.diamond("Si", 5.43, cubic=True)
+atoms.positions += 0.01          # writes into the C++ buffer, no copy
+print(atoms.get_space_group().hermann_mauguin)      # Fd-3m
+```
 
-pairs = fa.neighbor_list(atoms, cutoff=8.5, full=False)
-print(len(pairs), "pairs")
-print(pairs.vectors.shape)                  # (npairs, 3) minimum-image vectors
+## Key features
 
-atoms.positions += 0.01                     # writes into the C++ buffer
+| Module | What it covers |
+| --- | --- |
+| **Calculators** | Lennard-Jones and a classical force field in C++; VASP, Quantum ESPRESSO and SIESTA through generated inputs and parsed output |
+| **Machine-learning potentials** | MACE, MatterSim, CHGNet, NequIP and Allegro, evaluated in-process through LibTorch or through a persistent worker |
+| **Geometry optimizers** | Steepest descent, conjugate gradient, BFGS, L-BFGS and FIRE, with line searches and combined position–cell relaxation |
+| **Molecular dynamics** | NVE, NVT and NPT; velocity Verlet, leapfrog and Euler; Berendsen, Langevin, Nosé and Nosé–Hoover thermostats; Berendsen and Parrinello–Rahman barostats |
+| **Constraints** | `FixAtoms`, `FixLine` and `FixPlane`, respected by every optimizer, integrator and band alike, with SHAKE/RATTLE for rigid geometry |
+| **Reaction paths** | NEB, climbing-image NEB and AutoNEB, with IDPP interpolation for starting bands |
+| **Phonons** | Harmonic phonons by finite displacements, with a symmetry-reduced displacement set and no Phonopy dependency |
+| **Classical force fields** | SPC and SPC/E rigid water, Ewald electrostatics, SHAKE and RATTLE |
+| **Structure builders** | Bulk lattices, graphene and transition-metal dichalcogenides, nanotubes by (n, m), icosahedra, decahedra, cuboctahedra and Wulff constructions |
+| **Crystallographic symmetry** | Space groups 1–230 with derived Hermann–Mauguin symbols, Wyckoff positions, and primitive ↔ conventional cell standardization |
+| **Trajectory analysis** | Radial distribution functions, static structure factors by three routes, and interfacial tension from the pressure tensor |
+| **Electronic structure** | High-symmetry band paths, densities of state by linear tetrahedron and by smearing, direct and indirect band gaps |
+| **I/O** | Extended XYZ as the default format, plus a YAML input deck that describes a whole run |
+
+## Installation
+
+### With conda
+
+```sh
+conda install -c conda-forge fastatoms
+```
+
+A recipe lives in [`conda/`](conda/) and can be built locally in the meantime:
+
+```sh
+conda build conda/ -c conda-forge --override-channels
+conda install --use-local fastatoms
+```
+
+### With pip
+
+```sh
+pip install fastatoms
+```
+
+Or from a checkout, which builds the extension as part of the install:
+
+```sh
+pip install .
+```
+
+### From source with CMake
+
+Requirements: a C++17 compiler, CMake ≥ 3.20, and Python ≥ 3.9 with numpy for
+the bindings. **yaml-cpp** and **pybind11** are found on the system if present
+and downloaded automatically otherwise.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+The build tree is directly importable:
+
+```sh
+PYTHONPATH=build/python python -c "import fastatoms; print(fastatoms.__version__)"
+```
+
+#### Build options
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `FASTATOMS_BUILD_PYTHON` | `ON` | Build the pybind11 extension |
+| `FASTATOMS_BUILD_TESTS` | `ON` | Build the C++ test suite |
+| `FASTATOMS_BUILD_EXAMPLES` | `ON` | Build `fastatoms-run` and `fastatoms-interpolate` |
+| `FASTATOMS_ENABLE_OPENMP` | `ON` | Parallelise the neighbour search |
+| `FASTATOMS_ENABLE_NATIVE` | `OFF` | `-march=native`; faster, not portable |
+| `FASTATOMS_ENABLE_LTO` | `OFF` | Link-time optimisation in release builds |
+| `FASTATOMS_SHARED_CORE` | `OFF` | Build the core as a shared library |
+| `FASTATOMS_WITH_TORCH` | `OFF` | Evaluate machine-learning potentials in process |
+| `FASTATOMS_INSTALL` | `ON` | Generate install rules for the C++ library |
+
+Set `FETCHCONTENT_FULLY_DISCONNECTED=ON` to forbid downloads and require system
+dependencies.
+
+## Quickstart
+
+Build a structure, attach a calculator, relax it:
+
+```python
+import fastatoms as fa
+
+# A 32-atom argon crystal, deliberately compressed so there is work to do.
+atoms = fa.build.fcc("Ar", 5.0, cubic=True).repeat(2, 2, 2)
+
+atoms.calc = fa.LennardJones(epsilon=0.0103, sigma=3.40, cutoff=8.0)
+print(f"start   {atoms.get_potential_energy():.4f} eV")
+
+result = fa.LBFGS(fmax=0.01, relax_cell=True).run(atoms)
+
+print(f"relaxed {atoms.get_potential_energy():.4f} eV in {result.steps} steps")
+print(f"lattice constant {atoms.cell.lengths[0] / 2:.4f} A")
+print(f"space group {atoms.get_space_group().hermann_mauguin}")
+```
+
+```
+start   -2.0051 eV
+relaxed -2.3887 eV in 9 steps
+lattice constant 5.2741 A
+space group Fm-3m
+```
+
+The cell relaxation finds the equilibrium lattice constant, and the symmetry
+survives it. The same three lines work with a machine-learning potential
+(`atoms.calc = fa.MACE()`) or a DFT code (`atoms.calc = fa.Vasp(xc="pbe")`)
+without anything else changing.
+
+More, in [`python/examples/`](python/examples/):
+
+```sh
+python python/examples/build.py         # lattices, sheets, tubes, nanoparticles
+python python/examples/constraints.py   # three questions about one adatom
+python python/examples/neb.py           # reaction paths and barriers
+python python/examples/phonons.py       # dispersions and densities of state
 ```
 
 ## Layout
 
 ```
 include/fastatoms/     public headers (the C++ API)
+  build/               bulk, twod (graphene, TMDs), nanotube, cluster (Wulff)
+  analysis/            rdf, structure_factor, surface_tension
+  electronic/          bandpath, bands, dos (tetrahedron and smearing)
+  symmetry/            pointgroup, spacegroup, standardize
   core/                vec3, cell, atoms, constraints, neighbor_list, elements,
                        units
   io/                  extxyz (the default format), formats, parameters, yaml_input
@@ -56,46 +197,6 @@ examples/              example YAML inputs, the `fastatoms-run` driver and
                        `fastatoms-interpolate`
 cmake/                 dependency resolution and the installed package config
 ```
-
-## Building
-
-Requirements: a C++17 compiler, CMake ≥ 3.20, and Python ≥ 3.9 with numpy for
-the bindings. **yaml-cpp** and **pybind11** are found on the system if present
-and downloaded automatically otherwise, so a plain checkout builds as-is.
-
-```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build --output-on-failure
-```
-
-The build tree is directly importable:
-
-```sh
-PYTHONPATH=build/python python -c "import fastatoms; print(fastatoms.__version__)"
-```
-
-To install the Python package instead:
-
-```sh
-pip install .
-```
-
-### Build options
-
-| Option | Default | Effect |
-| --- | --- | --- |
-| `FASTATOMS_BUILD_PYTHON` | `ON` | Build the pybind11 extension |
-| `FASTATOMS_BUILD_TESTS` | `ON` | Build the C++ test suite |
-| `FASTATOMS_BUILD_EXAMPLES` | `ON` | Build `fastatoms-run` and `fastatoms-interpolate` |
-| `FASTATOMS_ENABLE_OPENMP` | `ON` | Parallelise the neighbour search |
-| `FASTATOMS_ENABLE_NATIVE` | `OFF` | `-march=native`; faster, not portable |
-| `FASTATOMS_ENABLE_LTO` | `OFF` | Link-time optimisation in release builds |
-| `FASTATOMS_SHARED_CORE` | `OFF` | Build the core as a shared library |
-| `FASTATOMS_INSTALL` | `ON` | Generate install rules for the C++ library |
-
-Set `FETCHCONTENT_FULLY_DISCONNECTED=ON` to forbid downloads and require system
-dependencies.
 
 ## Files
 
@@ -380,6 +481,400 @@ level, iteration counts, convergence flags.
 Because VASP requires atoms grouped by species, `fa.Vasp` reorders them in the
 POSCAR and permutes the forces back, so what you read matches the order you
 gave.
+
+## Electronic structure
+
+Band paths, band structures and densities of state.
+
+```python
+path = fa.electronic.bandpath(atoms, path="GXWKGL", points=200)
+bands = fa.electronic.BandStructure(kpoints, energies, bands=8, fermi_level=5.2)
+gap = bands.band_gap()
+dos = fa.electronic.density_of_states_tetrahedron(bands, (12, 12, 12))
+```
+
+Arrays are zero-copy read-only views, as in the trajectory analysis module.
+
+### Band paths
+
+The Bravais lattice is identified from the cell itself — by handing a
+one-atom structure to the symmetry module, whose point group is then the
+lattice's own holohedry — so a cell in any setting gets the right answer.
+
+```python
+fa.electronic.identify_bravais(atoms)     # BravaisLattice.FCC
+fa.electronic.default_path(atoms)         # "GXWKGLUWLK,UX"
+fa.electronic.special_points(atoms)       # {"G": ..., "X": ..., ...}
+```
+
+A comma makes the path *jump* rather than interpolate, and contributes no
+length to the plotted axis. Points are shared between segments in proportion
+to their length in reciprocal space, so the sampling is even along that axis
+rather than even per segment. `special_distances` and `special_labels` are the
+tick marks.
+
+**Coverage is stated, not implied.** CUB, FCC, BCC, TET, ORC, HEX and RHL (both
+variants) have their special points tabulated. The other seven — BCT, ORCF,
+ORCI, ORCC, MCL, MCLC, TRI — are *identified* correctly but have no table here,
+and asking for their points raises an error naming the lattice rather than
+returning something plausible. Use `bandpath_from_points` with corners of your
+own for those.
+
+### Density of states
+
+Two methods, which differ in how they interpolate between the k-points that
+were actually computed:
+
+| | needs | gives |
+| --- | --- | --- |
+| `density_of_states_tetrahedron` | a regular grid | sharp van Hove singularities, error falling as 1/n² |
+| `density_of_states` | any k-points | a curve smoothed by the smearing width |
+
+The tetrahedron method cuts each microcell of the grid into six tetrahedra
+along its **shortest body diagonal**, takes the bands to be linear inside each,
+and does the resulting isosurface integral in closed form. Checked against the
+free electron gas, where the density of states is `4π√E` and its integral
+`(8/3)πE^{3/2}`: the error is 1.2% on a 24³ grid and falls as the grid
+squared — 12% at 12³, 3.3% at 24³, 1.8% at 32³ on the integral. That is the
+discretisation, not a defect: a parabola is not linear inside a tetrahedron.
+
+Smearing offers Gaussian, Methfessel–Paxton of any order, and Fermi–Dirac.
+Methfessel–Paxton converges faster in the width, at the cost of **going
+slightly negative** — which is correct, and is asserted by the tests rather
+than worked around. Both methods obey the sum rule: the area under the density
+of states is the number of states there are.
+
+The two are compared on the same eigenvalues at 24³ and 32³ points a side. The
+tetrahedron error keeps falling; the smeared one is unchanged, because past
+that point the width is what is wrong and no number of k-points fixes it.
+
+### Band structures and gaps
+
+```python
+gap = bands.band_gap()
+gap.gap           # the fundamental gap, zero for a metal
+gap.direct_gap    # the smallest separation at a single k-point
+gap.direct        # whether the two coincide
+```
+
+The fundamental gap is between the highest occupied state *anywhere* and the
+lowest empty state *anywhere* — the two need not share a k-point, and that is
+the whole distinction between an indirect gap and a direct one. Both are
+reported along with which k-point and band each was found at.
+
+`BandStructure.from_calculator` reads eigenvalues out of a calculator's extra
+results. None of the calculators shipped here produce them yet, so it is the
+hook for one that does rather than something with a caller today; build from
+arrays in the meantime.
+
+## Trajectory analysis
+
+Pair correlations, structure factors and interfacial tension, over a sequence
+of `Atoms`.
+
+```python
+frames = fa.read_frames("run.extxyz")
+
+rdf = fa.analysis.radial_distribution(frames, rmax=10.0, bins=200)
+oh  = fa.analysis.radial_distribution(frames, first="O", second="H")
+sq  = fa.analysis.structure_factor(frames)
+gamma = fa.analysis.surface_tension(frames)
+```
+
+Every array comes back as a **zero-copy read-only numpy view** onto the C++
+storage, with the owning object as the array's base — `rdf.g.base is rdf`.
+Nothing is copied on the way out, and nothing can outlive its storage.
+
+### g(r)
+
+Pairs come from the neighbour list, so the cost is linear in the number of
+atoms rather than quadratic, and the minimum-image convention and periodic
+boundaries are handled there. `first` and `second` select which species a pair
+may be made of; leaving them out gives the total g(r).
+
+Alongside `g` you get `coordination`, the running integral, whose plateaux are
+the coordination shells — for fcc aluminium it steps 12, 18, 42 at exactly the
+right radii, and for rock salt the Na–Cl curve reaches 6 while Na–Na reaches
+12.
+
+The normalisation uses `N_A(N_B − δ_AB)/V` rather than `N_A N_B/V`, which is
+what makes g(r) come out at exactly one for an ideal gas of finitely many
+atoms instead of one minus 1/N.
+
+`RadialDistributionAccumulator` takes frames one at a time, so a trajectory of
+ten thousand need not be held in memory:
+
+```python
+accumulator = fa.analysis.RadialDistributionAccumulator(rmax=10.0, bins=200)
+for frame in fa.read_frames("run.extxyz"):
+    accumulator.add(frame)
+rdf = accumulator.result()
+```
+
+`rdf.reliable_rmax` is half the smallest cell width. Beyond it a shell no
+longer fits inside the box and g(r) is biased by the periodic images — the
+number is reported rather than the request being refused, because sometimes
+you do want to look out there.
+
+### S(q)
+
+Three routes, because they are good at different things and disagreeing is
+diagnostic:
+
+| method | exact for | needs |
+| --- | --- | --- |
+| `"reciprocal"` | a periodic cell | nothing — no cutoff, no window |
+| `"debye"` | a finite cluster | a cutoff, and a window |
+| `structure_factor_from_rdf` | — | a g(r) you already have |
+
+`"reciprocal"` sums `|Σ exp(iq·r)|²/N` over the wavevectors the cell actually
+supports. It is the one to trust for bulk MD, and on a conventional fcc cell it
+reproduces the extinction rule exactly: 4 at (111), (200) and (220), and 0 at
+(100) and (110).
+
+One thing worth knowing about the Debye route: for a **periodic** system the
+truncated sum has to have its uniform background subtracted, or the result
+carries the ideal-gas contribution instead of the deviation from it — which
+shows up as S(q) sitting well above one at small q for a structureless liquid.
+A finite cluster in vacuum has no such background and gets the Debye equation
+as it is usually written. This module does the subtraction when the frame is
+periodic and not otherwise.
+
+### Surface tension
+
+```
+gamma = (L_n / 2) [ P_nn - (P_t1t1 + P_t2t2) / 2 ]
+```
+
+averaged over frames, with `normal=` choosing the axis (z by default). The half
+is there because a periodic slab has **two** interfaces — it is not a
+normalisation of the average.
+
+The pressure tensor is the negative of the stress with the kinetic term
+included, so a compressed solid reads positive. Results carry a
+`standard_error`: surface tension converges slowly, and a value without one
+next to it says very little. `per_frame` gives the individual values so a run
+can be blocked or plotted, and `surface_tension_from_pressures` takes tensors
+computed elsewhere.
+
+## Crystallographic symmetry
+
+Space groups, point groups, Wyckoff positions and cell standardization,
+implemented from scratch — no spglib or any other symmetry library.
+
+```python
+group = atoms.get_space_group()
+print(group.number, group.hermann_mauguin)      # 227 Fd-3m
+
+primitive = atoms.get_primitive_cell()          # 8 atoms -> 2
+conventional = primitive.get_conventional_cell()
+```
+
+### How the symbol is arrived at
+
+The Hermann–Mauguin symbol is **derived**, not matched against a stored list of
+operation sets. The crystal system fixes a set of symmetry directions; each
+direction is asked which axis and which plane it carries; and the symbol is
+assembled from the answers. That is how the symbol is *defined*, so a group
+this code has never seen still comes out right.
+
+What makes it work is the **intrinsic translation** — the part of an
+operation's translation that no choice of origin can remove, obtained by
+averaging it over the powers of its own rotation. That component is what makes
+a screw a screw and a glide a glide, and it is origin-independent, so the
+answer does not depend on where the structure happens to sit in its cell.
+
+Only the last step is a lookup: turning the derived symbol into the number
+between 1 and 230 that International Tables assigns it. That numbering is a
+convention, and no amount of group theory recovers it.
+
+| | point group | space group |
+| --- | --- | --- |
+| copper | m-3m | Fm-3m (225) |
+| diamond | m-3m | **Fd-3m** (227) |
+| graphene | 6/mmm | P6/mmm (191) |
+| magnesium | 6/mmm | **P6₃/mmc** (194) |
+
+Each pair shares a point group and differs only in translations — a `d` glide
+in the first, a 6₃ screw in the second. Anything that only classified
+rotations would call them the same.
+
+### What comes back
+
+```python
+group.number                 # 227
+group.hermann_mauguin        # "Fd-3m"
+group.hermann_mauguin_full   # "F 4_1/d -3 2/m"
+group.schoenflies            # "Oh-7"
+group.point_group            # m-3m (Oh, cubic, order 48)
+group.centring               # Centring.F
+group.operations             # every (rotation, translation)
+group.wyckoff                # the orbits
+group.primitive              # the cell the analysis ran on
+```
+
+Wyckoff orbits carry a multiplicity, the site's own point group, and which
+atoms belong to them — rock salt comes back as `4a (m-3m)` and `4b (m-3m)`,
+diamond as a single `8a (-43m)`. The letters are assigned by increasing
+multiplicity as the Tables do; they are not looked up from them, so for a group
+with several sites of equal multiplicity the lettering may differ from the
+published one while the multiplicities and site symmetries do not.
+
+### Standardization
+
+`primitive_cell` finds the smallest cell that tiles the crystal, from the pure
+translations the symmetry search turns up, reduced to a basis by Hermite normal
+form. `conventional_cell` goes the other way: it asks the point group where the
+symmetry directions are and the lattice for its shortest vector along each,
+which is what turns a one-atom fcc cell into the four-atom cube.
+`niggli_reduce` gives the unique shortest, most orthogonal basis for a lattice,
+and is what the triclinic case falls back on.
+
+**Everything is analysed on the primitive cell**, whatever you hand in. A
+supercell admits far fewer operations than the crystal has — its lattice is a
+sublattice, and most of the rotations do not map it onto itself — so a 2×1×1
+box of diamond would otherwise come back monoclinic, which is true of the box
+and false of the crystal.
+
+### Tolerance
+
+`tolerance` is a distance in ångström. Too tight and real symmetry is missed;
+too loose and operations appear that are not there, which surfaces as a
+`SymmetryError` saying the rotations found are not one of the thirty-two
+crystallographic point groups rather than as a quietly wrong answer.
+
+## Building structures
+
+Generators for the structures you would otherwise write a script to produce.
+Everything comes back with its cell and boundary conditions already set.
+
+```python
+from fastatoms import build
+
+si = build.diamond("Si", 5.43, cubic=True)          # 8 atoms, periodic
+sheet = build.tmd("Mo", "S")                        # MoS2 monolayer, 15 A vacuum
+tube = build.nanotube(10, 0, length=4)              # a zigzag carbon nanotube
+particle = build.wulff("Ag", "fcc", 4.09,           # the equilibrium shape
+                       {"111": 1.0, "100": 1.15}, atoms=500)
+```
+
+### Bulk lattices
+
+| | primitive | conventional | nearest neighbour |
+| --- | ---: | ---: | --- |
+| `build.fcc(symbol, a)` | 1 | 4 | `a/√2` |
+| `build.bcc(symbol, a)` | 1 | 2 | `a√3/2` |
+| `build.hcp(symbol, a, c=…)` | 2 | — | `a` |
+| `build.diamond(symbol, a)` | 2 | 8 | `a√3/4` |
+| `build.rocksalt(first, second, a)` | 2 | 8 | `a/2` |
+| `build.zincblende(first, second, a)` | 2 | 8 | `a√3/4` |
+| `build.cscl(first, second, a)` | 2 | — | `a√3/2` |
+
+`a` is always the conventional cubic lattice constant, never the bond length.
+Pass `cubic=True` for the conventional cell — the primitive one is what you
+want for a band structure, the conventional one for anything you intend to look
+at. `hcp` defaults to the ideal `c = a√(8/3)`. `build.bulk(symbols, name, a)`
+takes any of them by name, which is what the Python and input-file layers use.
+
+### 2D materials
+
+```python
+build.graphene(a=2.46, vacuum=15.0, nx=4, ny=4)   # 32 atoms
+build.graphene_rectangular()                       # the 4-atom orthorhombic cell
+build.honeycomb(["B", "N"], 2.51)                  # hexagonal boron nitride
+build.honeycomb("Si", 3.87, buckling=0.44)         # silicene, which is not flat
+build.tmd("Mo", "S")                               # 1H MoS2 from measured values
+build.tmd("W", "Se", phase="1T", vacuum=20.0)      # the octahedral polymorph
+```
+
+**Vacuum is the gap, not the cell height.** Ask a dichalcogenide for 15 Å and
+you get 15 Å of empty space between one layer and the next image of it —
+`3.13 + 15.00 = 18.13 Å` of cell for MoS₂ — with the layer centred so it never
+straddles the boundary. `build.set_vacuum(atoms, gap)` re-pads an existing
+sheet without touching its in-plane lattice.
+
+Sixteen dichalcogenides have tabulated lattice constants and thicknesses
+(`build.known_tmds()`); give `a=` and `thickness=` for anything else. The 1H
+and 1T phases differ only in where the lower chalcogen sits, and in almost
+every property that follows from it.
+
+### Nanotubes
+
+```python
+build.nanotube(10, 0, length=4)              # carbon
+build.roll(build.tmd("Mo", "S"), 10, 0)      # any hexagonal sheet
+build.tube_geometry(6, 3)                    # the numbers, without the atoms
+```
+
+| (n, m) | atoms | diameter | chiral angle |
+| --- | ---: | ---: | ---: |
+| (5, 5) | 20 | 6.78 Å | 30° — armchair |
+| (9, 0) | 36 | 7.05 Å | 0° — zigzag |
+| (6, 3) | 84 | 6.22 Å | 19.1° — chiral |
+
+A sheet with thickness rolls into a tube with two walls, because each atom
+keeps its height above the mid-plane as a radial offset: a (10, 0) MoS₂ tube
+has its sulphur at 3.46 Å and 6.59 Å with the molybdenum between them at
+5.03 Å.
+
+One subtlety worth knowing about: the chiral indices are defined against a
+basis whose vectors meet at 60°, and the sheets here are built on the
+120° description of the same lattice. `roll` converts before applying the
+standard formulas, so `(5, 5)` means the 6.78 Å armchair tube everyone else
+means by it. Getting this wrong does not fail loudly — it builds a rectangle
+that is not a lattice rectangle, and the tube comes out with several times too
+many atoms.
+
+### Nanoparticles
+
+```python
+build.icosahedron("Ag", shells=3, d=2.89)        # 147 atoms
+build.cuboctahedron("Ag", shells=3, a=4.09)      # 147 atoms
+build.decahedron("Ag", p=3, q=4, r=1, a=4.09)    # Marks; r=0 gives Ino
+```
+
+Icosahedra and cuboctahedra close their shells at the same magic numbers — 13,
+55, 147, 309, 561 — because they have the same shell structure and differ only
+in how it is folded. The icosahedron is **strained**: ask for 2.89 Å within a
+shell and the shells themselves come out 2.749 Å apart, a factor of 1.0515.
+Twenty tetrahedra cannot meet at a point without it, and it is why icosahedra
+win at small sizes and lose at large ones.
+
+Decahedra are five fcc tetrahedra twinned about a common axis. Five times the
+70.53° dihedral is 352.6°, not a full turn, so each wedge is stretched
+azimuthally to exactly 72° — which is what real five-fold twinned particles do
+too. `r` cuts the Marks re-entrance into each twin boundary.
+
+### The Wulff construction
+
+```python
+build.wulff("Ag", "fcc", 4.09, {"111": 1.0, "100": 1.15}, atoms=500)
+build.wulff("Ag", "fcc", 4.09, [[1, 1, 1, 1.0], [1, 0, 0, 1.15]], atoms=500)
+```
+
+Each facet sits at a distance proportional to its surface energy — that is
+Wulff's theorem — so cheap facets grow and dear ones shrink away. Only the
+ratios matter; the overall scale comes from the atom count you ask for, and
+since the count jumps as whole facets of atoms appear, the closest achievable
+size is used rather than the exact one. Symmetry-equivalent directions are
+generated for you: `build.equivalent_directions(1, 1, 0)` gives all twelve.
+
+### Does it produce anything usable?
+
+`python/examples/build.py` ends by relaxing icosahedra against cuboctahedra of
+the same size on a Lennard-Jones potential:
+
+| atoms | icosahedron | cuboctahedron |
+| ---: | ---: | ---: |
+| 13 | −0.03499 | −0.03226 |
+| 55 | −0.05173 | −0.04969 |
+| 147 | −0.06027 | −0.05875 |
+| 309 | −0.06528 | −0.06414 |
+
+Energy per atom in eV. The icosahedron wins at every one of these sizes, which
+is the known result for a Lennard-Jones potential: its five per cent internal
+strain costs less than the extra surface a cuboctahedron of the same size
+exposes. Real metals cross over to fcc shapes far earlier.
 
 ## Constraints
 
@@ -1562,6 +2057,9 @@ PYTHONPATH=build/python python python/examples/phonons.py examples/phonons_argon
 # Machine-learning potentials: the graph, both backends, a relaxation
 PYTHONPATH=build/python python python/examples/mlip.py --model mace-off23-small.pt
 
+# Structure builders: lattices, sheets, tubes, particles, and which shape wins
+PYTHONPATH=build/python python python/examples/build.py
+
 # Constraints: three questions about one adatom, and the bookkeeping they need
 PYTHONPATH=build/python python python/examples/constraints.py
 
@@ -1790,7 +2288,7 @@ const double mlip_energy = deck.atoms.get_potential_energy();
 
 ## Testing
 
-`ctest` runs seventeen C++ suites and the Python suite. The neighbour list is
+`ctest` runs twenty-one C++ suites and the Python suite. The neighbour list is
 checked against a brute-force O(N² × images) reference for cubic, triclinic,
 slab, isolated and smaller-than-cutoff cells; the minimum-image convention is
 checked the same way.
@@ -1854,6 +2352,79 @@ parallel component, and the test counts them. The springs must push along the
 path and nowhere else on a deliberately bunched band, the tangent must be a
 unit vector pointing towards the higher neighbour, and a symmetric barrier must
 relax to a symmetric profile.
+
+The electronic structure module is checked against the free electron gas,
+whose density of states is `4π√E` in closed form and whose integral is
+`(8/3)πE^{3/2}`. Both are matched, and the tetrahedron error is required to
+fall when the grid is refined while the smeared one is required not to — which
+is the statement that the two methods are limited by different things. Every
+smearing function has to integrate to one, since a delta replacement without
+unit area miscounts the states everywhere and silently. A flat band, where
+every tetrahedron has four equal corner energies and every denominator in the
+closed forms vanishes, has to give a finite non-negative answer. Band paths
+have to pass exactly through the points they name, with Γ→X of an fcc lattice
+landing at 2π/a.
+
+The analysis module is checked against answers that are known before the code
+runs. The coordination shells of fcc aluminium have to come out at `a/√2`, `a`,
+`a√1.5` and `a√2` holding 12, 18 and 42 atoms cumulatively; rock salt has to
+give six chlorines around a sodium and twelve sodiums, with the cross
+correlation starting at `a/2` and the like-species one at `a/√2`. An ideal gas
+has to give g(r) = 1 and S(q) = 1, which is what says the normalisations are
+right. The reciprocal-lattice structure factor has to reproduce the fcc
+extinction rule — 4 at (111), (200) and (220), 0 at (100) and (110) — which no
+part of the code is told about. The tension formula is checked against tensors
+whose answer can be worked out by hand, an isotropic pressure has to give
+exactly zero whatever its magnitude, and an unstrained cubic crystal has to
+give zero all the way through a real calculator.
+
+That ideal-gas test earned its place: the Debye sum was returning S(q)
+noticeably above one at small q, because a truncated sum over a periodic system
+carries the uniform background that the `1` is supposed to be measured against.
+
+The symmetry module is checked against structures whose space groups are in
+every textbook: simple cubic, fcc, bcc, diamond, rock salt, zinc blende,
+caesium chloride, hcp, graphene and both dichalcogenide phases — twelve
+answers, across six crystal systems and four centrings, none of which depends
+on this code. The pairs that share a point group and differ only in
+translations are checked as pairs, because those are what a symbol derived from
+rotations alone would get wrong. The 230-entry table is checked to be 230
+distinct symbols that round-trip to their numbers, with the crystal-system
+boundaries falling where the Tables put them, and the thirty-two point groups
+to have thirty-two distinct operation-count signatures — which is the property
+the identification rests on.
+
+Three bugs surfaced there and are worth recording. Fractional coordinates are
+row vectors in this codebase, so an operation's invariant axis is a *left*
+eigenvector; taking columns of the projector instead gave the right answer for
+every cubic case, where the matrices are symmetric, and put the six-fold axis
+in the wrong slot for every hexagonal one. The axis finder in the standardizer
+looped `k < order`, which runs zero times for a rotoinversion's negative order
+and returned whichever coordinate direction came first. And the symbol slot
+names the *generator* of the axial subgroup, so a body diagonal carrying both a
+three-fold and a three-fold rotoinversion is written `-3`, not `3` — the
+difference between `Pm3m` and `Pm-3m`.
+
+The builders are checked against things that do not depend on the code that
+produced them. Coordination numbers are counted, not asserted from the
+construction: six for simple cubic, twelve for fcc and hcp, eight for bcc, four
+for diamond, three for every carbon in a graphene sheet and in a rolled tube.
+Nearest-neighbour distances are checked against `a/√2` and the rest, and the
+primitive and conventional cells are required to describe the same crystal by
+volume. Nanotube atom counts and diameters are checked against the published
+values for four different (n, m). Clusters have to hit the magic numbers 13,
+55, 147, 309 and 561 — nothing in the construction guarantees those, they come
+out or they do not — and a decahedron has to map onto itself under a fifth of a
+turn, atom by atom. The Wulff construction is checked by the property that
+defines it: raising the cost of {111} relative to {100} must move atoms out of
+the corners of the cube and into its faces.
+
+Two of those tests earned their place immediately. The nanotube count guard
+caught a (10, 0) tube coming out with 140 atoms instead of 40, from applying
+the 60° chiral-index formulas to a 120° lattice basis; and the five-fold
+symmetry test caught a decahedron whose twin boundaries were being
+deduplicated asymmetrically, which is why the wedge is now replicated after
+deduplication rather than before.
 
 The constraints are checked twice over: the projections themselves, and - the
 part that actually matters - that every consumer honours them. The constrained
@@ -1934,6 +2505,25 @@ ase_atoms = fa.to_ase(atoms)      # needs `pip install ase`
 atoms = fa.from_ase(ase_atoms)
 ```
 
+## Contributing
+
+Issues and pull requests are welcome. Two things make a change easy to accept:
+
+- **Tests that would fail without it.** Every module here is checked against
+  something that does not depend on the code producing it — a textbook space
+  group, a coordination number counted rather than assumed, an analytic saddle
+  point solved inside the test. See [Testing](#testing) for what the suite
+  already covers.
+- **The house style.** C++17, four-space indent, 100-column lines, clean under
+  `-Wall -Wextra -Wpedantic -Wshadow`. Units follow ASE: ångström, eV, amu,
+  with stress in eV/Å³ in Voigt order.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
 ## Licence
 
-MIT. See `LICENSE`.
+MIT. See [`LICENSE`](LICENSE).

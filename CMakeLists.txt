@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(FastAtoms
-    VERSION 0.2.0
+    VERSION 0.2.1
     DESCRIPTION "High-performance C++ core for atomistic simulations, driven from Python"
     LANGUAGES CXX)
 
@@ -60,7 +60,19 @@ include(cmake/FastAtomsDependencies.cmake)
 # ---------------------------------------------------------------------------
 set(FASTATOMS_CORE_SOURCES
     src/build/bulk.cpp
+    src/build/cluster.cpp
+    src/build/nanotube.cpp
     src/build/twod.cpp
+    src/electronic/bandpath.cpp
+    src/electronic/bands.cpp
+    src/electronic/dos.cpp
+    src/analysis/rdf.cpp
+    src/analysis/structure_factor.cpp
+    src/analysis/surface_tension.cpp
+    src/symmetry/pointgroup.cpp
+    src/symmetry/spacegroup.cpp
+    src/symmetry/spacegroup_table.cpp
+    src/symmetry/standardize.cpp
     src/core/atoms.cpp
     src/core/constraints.cpp
     src/core/cell.cpp
@@ -121,7 +133,18 @@ set(FASTATOMS_CORE_SOURCES
 set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/fastatoms.hpp
     include/fastatoms/build/bulk.hpp
+    include/fastatoms/build/cluster.hpp
+    include/fastatoms/build/nanotube.hpp
     include/fastatoms/build/twod.hpp
+    include/fastatoms/electronic/bandpath.hpp
+    include/fastatoms/electronic/bands.hpp
+    include/fastatoms/electronic/dos.hpp
+    include/fastatoms/analysis/rdf.hpp
+    include/fastatoms/analysis/structure_factor.hpp
+    include/fastatoms/analysis/surface_tension.hpp
+    include/fastatoms/symmetry/pointgroup.hpp
+    include/fastatoms/symmetry/spacegroup.hpp
+    include/fastatoms/symmetry/standardize.hpp
     include/fastatoms/core/atoms.hpp
     include/fastatoms/core/cell.hpp
     include/fastatoms/core/constraint.hpp
