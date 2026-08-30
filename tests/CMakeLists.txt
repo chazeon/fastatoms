@@ -16,6 +16,7 @@ set(FASTATOMS_CPP_TESTS
     test_relaxation
     test_neb
     test_constraints
+    test_build
     test_md
     test_md_ensembles
     test_phonon_setup

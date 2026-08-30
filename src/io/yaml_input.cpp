@@ -169,6 +169,116 @@ const Value& first_of(const Value& node, std::initializer_list<const char*> name
     return Value::null();
 }
 
+/// A direction: an axis name, or three numbers.
+Vec3 parse_direction(const Value& node, const char* what) {
+    if (node.is_null()) {
+        throw InputError(std::string(what) + ": a direction is required");
+    }
+    if (node.is_string()) {
+        const std::string name = lowercase(node.as_string());
+        if (name == "x") return Vec3{1.0, 0.0, 0.0};
+        if (name == "y") return Vec3{0.0, 1.0, 0.0};
+        if (name == "z") return Vec3{0.0, 0.0, 1.0};
+        throw InputError(std::string(what) + ": '" + node.as_string() +
+                         "' is not an axis; use x, y, z or three numbers");
+    }
+    const std::vector<double> values = node.as_doubles();
+    if (values.size() != 3) {
+        throw InputError(std::string(what) + ": expected an axis name or three numbers");
+    }
+    return Vec3{values[0], values[1], values[2]};
+}
+
+/// The atoms one constraint entry names, from `indices:` or `mask:`.
+std::vector<std::size_t> parse_selection(const Value& entry, const std::string& what) {
+    const Value& indices = first_of(entry, {"indices", "atoms", "index"});
+    const Value& mask = first_of(entry, {"mask"});
+    if (!indices.is_null() && !mask.is_null()) {
+        throw InputError(what + ": give either indices or mask, not both");
+    }
+
+    std::vector<std::size_t> out;
+    if (!mask.is_null()) {
+        if (!mask.is_list()) {
+            throw InputError(what + ".mask: expected a list of true/false");
+        }
+        std::size_t position = 0;
+        for (const Value& flag : mask.as_list()) {
+            if (flag.as_bool()) {
+                out.push_back(position);
+            }
+            ++position;
+        }
+        return out;
+    }
+    if (indices.is_null()) {
+        throw InputError(what + ": needs indices or a mask saying which atoms it holds");
+    }
+    for (const std::int64_t index : parse_index_list(indices, (what + ".indices").c_str())) {
+        out.push_back(static_cast<std::size_t>(index));
+    }
+    return out;
+}
+
+/// The `type:` a constraint is written back as. Keyed off the class rather
+/// than a stored string, so a new constraint cannot be silently written out as
+/// something the reader would rebuild differently.
+std::string constraint_type_name(const Constraint& constraint) {
+    const std::string& name = constraint.name();
+    if (name == "FixAtoms") return "fix_atoms";
+    if (name == "FixLine") return "fix_line";
+    if (name == "FixPlane") return "fix_plane";
+    throw InputError("constraints: '" + name + "' cannot be written to YAML");
+}
+
+/// An axis name when the direction is one, three numbers otherwise.
+Value direction_value(const Vec3& v) {
+    const auto axis = [&](double a, double b, double c) {
+        return std::abs(v.x - a) < 1e-12 && std::abs(v.y - b) < 1e-12 &&
+               std::abs(v.z - c) < 1e-12;
+    };
+    if (axis(1.0, 0.0, 0.0)) return Value(std::string("x"));
+    if (axis(0.0, 1.0, 0.0)) return Value(std::string("y"));
+    if (axis(0.0, 0.0, 1.0)) return Value(std::string("z"));
+    return Value(Value::List{Value(v.x), Value(v.y), Value(v.z)});
+}
+
+/// One entry of the `constraints:` list.
+std::shared_ptr<Constraint> parse_constraint(const Value& entry, std::size_t position) {
+    const std::string what = "constraints[" + std::to_string(position) + "]";
+    if (!entry.is_map()) {
+        throw InputError(what + ": expected a mapping with a type and the atoms it holds");
+    }
+    const Value& type = first_of(entry, {"type", "name", "kind"});
+    if (type.is_null()) {
+        throw InputError(what + ": needs a type (fix_atoms, fix_line or fix_plane)");
+    }
+
+    std::string key = lowercase(type.as_string());
+    key.erase(std::remove_if(key.begin(), key.end(),
+                             [](unsigned char c) { return c == '_' || c == '-' || c == ' '; }),
+              key.end());
+
+    if (key == "fixatoms" || key == "fix" || key == "fixed" || key == "freeze") {
+        return std::make_shared<FixAtoms>(parse_selection(entry, what));
+    }
+    if (key == "fixline" || key == "line") {
+        return std::make_shared<FixLine>(
+            parse_selection(entry, what),
+            parse_direction(first_of(entry, {"direction", "axis", "along"}),
+                            (what + ".direction").c_str()));
+    }
+    if (key == "fixplane" || key == "plane") {
+        return std::make_shared<FixPlane>(
+            parse_selection(entry, what),
+            parse_direction(first_of(entry, {"normal", "axis", "perpendicular"}),
+                            (what + ".normal").c_str()));
+    }
+    throw InputError(what + ": '" + type.as_string() +
+                     "' is not a constraint; use fix_atoms, fix_line or fix_plane");
+}
+
+
 Cell parse_cell(const Value& node) {
     if (node.is_null()) {
         return Cell{};
@@ -563,6 +673,30 @@ Atoms atoms_from_value_impl(const Value& structure) {
         }
     }
 
+    // Constraints belong to the structure rather than to the run, which is
+    // what makes them apply to every task: a deck that freezes a substrate
+    // freezes it whether it goes on to relax, run dynamics or build a band.
+    if (const Value& list = first_of(structure, {"constraints", "constraint"});
+        !list.is_null()) {
+        ConstraintList constraints;
+        if (list.is_map()) {
+            constraints.push_back(parse_constraint(list, 0));   // a single one, unwrapped
+        } else if (list.is_list()) {
+            std::size_t position = 0;
+            for (const Value& entry : list.as_list()) {
+                constraints.push_back(parse_constraint(entry, position++));
+            }
+        } else {
+            throw InputError("constraints: expected a list of constraints");
+        }
+        try {
+            atoms.set_constraints(std::move(constraints));
+        } catch (const ConstraintError& error) {
+            // The structure is known here, so the message can say what it is.
+            throw InputError(std::string("constraints: ") + error.what());
+        }
+    }
+
     if (const Value& wrap = first_of(structure, {"wrap"}); wrap.value_or(false)) {
         atoms.wrap();
     }
@@ -882,6 +1016,30 @@ std::string write_yaml_string(const Atoms& atoms, bool scaled) {
             arrays.insert(name, Value(std::move(rows)));
         }
         structure.insert("arrays", std::move(arrays));
+    }
+
+    // Constraints, in the form the reader accepts, so a structure written out
+    // and read back is the same structure and not a freer one.
+    if (atoms.has_constraints()) {
+        Value::List written;
+        for (const std::shared_ptr<Constraint>& constraint : atoms.constraints()) {
+            Value entry;
+            entry.insert("type", Value(constraint_type_name(*constraint)));
+
+            Value::List indices;
+            for (const std::size_t index : constraint->indices()) {
+                indices.push_back(Value(static_cast<std::int64_t>(index)));
+            }
+            entry.insert("indices", Value(std::move(indices)));
+
+            if (const auto* line = dynamic_cast<const FixLine*>(constraint.get())) {
+                entry.insert("direction", direction_value(line->direction()));
+            } else if (const auto* plane = dynamic_cast<const FixPlane*>(constraint.get())) {
+                entry.insert("normal", direction_value(plane->normal()));
+            }
+            written.push_back(std::move(entry));
+        }
+        structure.insert("constraints", Value(std::move(written)));
     }
 
     Value document;

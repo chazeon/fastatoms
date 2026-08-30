@@ -316,6 +316,34 @@ int removed_degrees_of_freedom(const ConstraintList& constraints, const Atoms& a
     return removed;
 }
 
+int free_translations(const ConstraintList& constraints, const Atoms& atoms) {
+    if (constraints.empty()) {
+        return 3;
+    }
+    // Push each uniform translation through the projection and see what comes
+    // back. Measured, not reasoned about, for the same reason the count above
+    // is: it cannot then disagree with what is enforced.
+    int surviving = 0;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        std::vector<double> shift(3 * atoms.size(), 0.0);
+        for (std::size_t i = 0; i < atoms.size(); ++i) {
+            shift[3 * i + axis] = 1.0;
+        }
+        adjust_momenta(constraints, atoms, shift);
+
+        double kept = 0.0;
+        for (const double value : shift) {
+            kept += value * value;
+        }
+        // A translation is a symmetry only if every atom still makes it. Any
+        // loss at all means the whole motion is forbidden, not diminished.
+        if (kept > static_cast<double>(atoms.size()) - 1e-9) {
+            ++surviving;
+        }
+    }
+    return surviving;
+}
+
 // ---------------------------------------------------------------------------
 // The Atoms side
 //

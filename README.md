@@ -240,6 +240,9 @@ structure:
     - [H, -0.24, 0.93, 0.0]         # the compact form
 ```
 
+A `constraints:` list restricting how the atoms may move is read here too; see
+[Constraints](#constraints).
+
 `masses`, `charges`, `tags`, `momenta`, `velocities` and free-form `arrays` are
 all read if present. Keys FastAtoms does not interpret are still reachable
 through `deck.document` and `deck.simulation.raw`, so a downstream driver can
@@ -429,7 +432,13 @@ whatever velocity it started with.
   spring term and the climbing image's reversed component are under no
   obligation to respect anything.
 - **Degrees of freedom** are subtracted before the temperature is computed, so
-  a thermostat holds the system at the temperature you asked for.
+  a thermostat holds the system at the temperature you asked for — and the
+  centre-of-mass term is counted only for the translations the constraints
+  leave as symmetries. Freezing atoms already pins the centre of mass; charging
+  three more for it makes a slab with one adsorbate look like it has no degrees
+  of freedom at all. The Maxwell–Boltzmann draw is rescaled over the same
+  reduced count, since `set_velocities` has already projected most of what it
+  drew away.
 
 ### Counting degrees of freedom
 
@@ -448,6 +457,40 @@ The count is obtained by pushing the three unit directions of every atom
 through the same projection the rest of the code enforces and counting how many
 survive, so it cannot disagree with what is actually applied.
 
+### From the input file
+
+Constraints belong to the `structure:`, not to the run, which is what makes
+them apply to every task: a deck that freezes a substrate freezes it whether it
+goes on to relax, run dynamics or build a band.
+
+```yaml
+structure:
+  cell: [[15.2, 0, 0], [0, 15.2, 0], [0, 0, 24.0]]
+  pbc: xy
+  atoms: [[Ar, 0.0, 0.0, 0.0], ...]
+  constraints:
+    - {type: fix_atoms, indices: ["0-15"]}
+    - {type: fix_line,  indices: [16], direction: z}
+    - {type: fix_plane, indices: [17], normal: [1, 1, 0]}
+```
+
+`indices` takes integers and `"first-last"` ranges; `mask: [true, false, ...]`
+is the alternative spelling. A direction is `x`, `y`, `z` or three numbers.
+`type` tolerates `fix_atoms`, `fix-atoms`, `FixAtoms` and `fix`; `atoms`,
+`index` and `along` work where `indices` and `direction` do. A single
+constraint need not be written as a list.
+
+`examples/neb_argon.yaml` holds its substrate this way, and
+`./build/examples/fastatoms-run` reports what it found before running:
+
+```
+constraints : 1, removing 48 degrees of freedom
+              FixAtoms(16 atoms)
+```
+
+Structures written back out with `fa.to_yaml` carry their constraints, so a
+round trip gives the same structure rather than a freer one.
+
 ### Not the same as SHAKE and RATTLE
 
 The rigid-geometry constraints of [the water models](#rigid-geometry-shake-and-rattle)
@@ -455,9 +498,9 @@ are a different thing: `DistanceConstraint` is holonomic, couples atoms to each
 other, and needs an iterative solver. These are linear projections, exact in one
 step. The two compose — rigid water molecules on a frozen slab is both at once.
 
-`fa.NEB(..., fix=[...])` also still exists. It is a shorthand that holds atoms
-for that band only; attaching a `FixAtoms` to the images is the general
-mechanism and does the same thing.
+`fa.NEB(..., fix=[...])` and `neb: {fix: [...]}` also still exist. They are
+shorthands that hold atoms for one band only; a `FixAtoms` on the structure is
+the general mechanism and gives the same answer to the digit.
 
 ## Geometry optimization
 
@@ -1518,6 +1561,9 @@ PYTHONPATH=build/python python python/examples/phonons.py examples/phonons_argon
 
 # Machine-learning potentials: the graph, both backends, a relaxation
 PYTHONPATH=build/python python python/examples/mlip.py --model mace-off23-small.pt
+
+# Constraints: three questions about one adatom, and the bookkeeping they need
+PYTHONPATH=build/python python python/examples/constraints.py
 
 # Reaction paths: plain NEB against CI-NEB, then AutoNEB, on an adatom hop
 PYTHONPATH=build/python python python/examples/neb.py

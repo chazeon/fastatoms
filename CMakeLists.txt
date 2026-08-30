@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(FastAtoms
-    VERSION 0.1.3
+    VERSION 0.2.0
     DESCRIPTION "High-performance C++ core for atomistic simulations, driven from Python"
     LANGUAGES CXX)
 
@@ -59,6 +59,8 @@ include(cmake/FastAtomsDependencies.cmake)
 # Core library
 # ---------------------------------------------------------------------------
 set(FASTATOMS_CORE_SOURCES
+    src/build/bulk.cpp
+    src/build/twod.cpp
     src/core/atoms.cpp
     src/core/constraints.cpp
     src/core/cell.cpp
@@ -118,6 +120,8 @@ set(FASTATOMS_CORE_SOURCES
 
 set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/fastatoms.hpp
+    include/fastatoms/build/bulk.hpp
+    include/fastatoms/build/twod.hpp
     include/fastatoms/core/atoms.hpp
     include/fastatoms/core/cell.hpp
     include/fastatoms/core/constraint.hpp

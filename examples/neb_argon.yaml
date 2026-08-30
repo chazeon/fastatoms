@@ -35,6 +35,17 @@ structure:
     - [Ar, 11.4000, 11.4000,  0.0000]
     - [Ar,  1.9000,  1.9000,  2.7000]
 
+  # The substrate, as a range rather than sixteen separate entries. Holding it
+  # is not optional here: the projected band force does not have to sum to
+  # zero, so a free spectator atom keeps a force the tangent knows nothing
+  # about and drags the whole band along the reaction coordinate.
+  #
+  # Constraints live on the structure, so they reach every task - and, as
+  # below, every image of the band. `neb: {fix: [...]}` is a shorthand that
+  # does the same thing for one band only.
+  constraints:
+    - {type: fix_atoms, indices: ["0-15"]}
+
 simulation:
   task: neb
 
@@ -66,15 +77,12 @@ simulation:
         - [Ar, 11.4000, 11.4000,  0.0000]
         - [Ar,  5.7000,  1.9000,  2.7000]
 
+      constraints:
+        - {type: fix_atoms, indices: ["0-15"]}
+
     images: 9
     spring_constant: 0.5
     climb: true
-
-    # The substrate, as a range rather than sixteen separate entries. Holding
-    # it is not optional: the projected band force does not have to sum to
-    # zero, so a free spectator atom keeps a force the tangent knows nothing
-    # about and drags the whole band along the reaction coordinate.
-    fix: ["0-15"]
 
   optimizer:
     algorithm: fire

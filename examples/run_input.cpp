@@ -30,6 +30,13 @@ void print_structure(const Atoms& atoms) {
         std::printf("volume      : %.4f A^3  (%.4f A^3 / atom)\n", atoms.volume(),
                     atoms.size() ? atoms.volume() / static_cast<double>(atoms.size()) : 0.0);
     }
+    if (atoms.has_constraints()) {
+        std::printf("constraints : %zu, removing %d degrees of freedom\n",
+                    atoms.constraints().size(), atoms.constrained_degrees_of_freedom());
+        for (const std::shared_ptr<Constraint>& constraint : atoms.constraints()) {
+            std::printf("              %s\n", constraint->to_string().c_str());
+        }
+    }
     const Vec3 com = atoms.center_of_mass();
     std::printf("centre of mass: [%.4f, %.4f, %.4f]\n", com.x, com.y, com.z);
     if (atoms.has_momenta()) {

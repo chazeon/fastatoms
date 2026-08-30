@@ -4,6 +4,8 @@
 /// \file fastatoms.hpp
 /// \brief Umbrella header: includes the whole public API.
 
+#include "fastatoms/build/bulk.hpp"
+#include "fastatoms/build/twod.hpp"
 #include "fastatoms/calculators/calculator.hpp"
 #include "fastatoms/calculators/file_io_calculator.hpp"
 #include "fastatoms/calculators/lennard_jones.hpp"

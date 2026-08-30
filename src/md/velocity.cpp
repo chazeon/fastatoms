@@ -70,14 +70,26 @@ void set_maxwell_boltzmann_velocities(Atoms& atoms, double temperature, std::int
     }
     atoms.set_velocities(velocities);
 
-    if (remove_center_of_mass) {
+    // Setting the velocities already applied the constraints, so most of what
+    // was drawn above may be gone. Removing the net momentum of what is left
+    // only makes sense while translation is still a symmetry - with a frozen
+    // substrate it is not, and subtracting the mobile atoms' momentum would
+    // simply cool them.
+    const int translations = free_translations(atoms.constraints(), atoms);
+    if (remove_center_of_mass && translations == 3) {
         atoms.zero_center_of_mass_momentum();
     }
     if (exact) {
         // A finite sample lands near the target, not on it. Rescaling makes
-        // the starting temperature exactly what was asked for.
-        rescale_to_temperature(atoms, temperature,
-                               momentum_degrees_of_freedom(atoms, remove_center_of_mass));
+        // the starting temperature exactly what was asked for - counted over
+        // the degrees of freedom that are actually left, or a slab with one
+        // adsorbate starts an order of magnitude too hot.
+        int dof = momentum_degrees_of_freedom(atoms, false) -
+                  atoms.constrained_degrees_of_freedom();
+        if (remove_center_of_mass) {
+            dof -= translations;
+        }
+        rescale_to_temperature(atoms, temperature, dof);
     }
 }
 

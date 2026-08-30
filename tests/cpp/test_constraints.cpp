@@ -286,6 +286,56 @@ FA_TEST(molecular_dynamics_honours_them) {
     FA_CHECK(std::abs(atoms.position(3).z - start[11]) > 1e-6);
 }
 
+FA_TEST(freezing_atoms_leaves_no_translation_to_remove) {
+    Atoms atoms = cluster();
+    FA_CHECK(free_translations(atoms.constraints(), atoms) == 3);   // nothing attached
+
+    // A frozen atom leaves none: every translation moves it.
+    atoms.set_constraints({std::make_shared<FixAtoms>(std::vector<std::size_t>{0})});
+    FA_CHECK(free_translations(atoms.constraints(), atoms) == 0);
+
+    // A plane leaves the two translations that lie in it. Sliding everything
+    // sideways still keeps the held atom in its plane; sliding it through the
+    // plane does not.
+    atoms.set_constraints({std::make_shared<FixPlane>(std::vector<std::size_t>{0}, Vec3{0, 0, 1})});
+    FA_CHECK(free_translations(atoms.constraints(), atoms) == 2);
+
+    // A line leaves the one translation along it.
+    atoms.set_constraints({std::make_shared<FixLine>(std::vector<std::size_t>{0}, Vec3{0, 0, 1})});
+    FA_CHECK(free_translations(atoms.constraints(), atoms) == 1);
+}
+
+FA_TEST(the_centre_of_mass_is_not_subtracted_twice) {
+    // A slab with one adsorbate: freezing the substrate already pins the
+    // centre of mass, so charging three more for it leaves nothing at all and
+    // the run refuses to start.
+    Atoms atoms = cluster();
+    atoms.set_constraints({std::make_shared<FixAtoms>(std::vector<std::size_t>{0, 1, 2})});
+    md::set_maxwell_boltzmann_velocities(atoms, 300.0, 5);
+
+    md::Dynamics dynamics(Value(Value::Map{{"integrator", Value(std::string("velocity_verlet"))},
+                                           {"timestep", Value(1.0)}}));
+    const md::DynamicsResult result = dynamics.run(atoms, 1);
+    const md::DynamicsStep& first = result.history.front();
+    const double dof = 2.0 * first.kinetic_energy / (first.temperature * units::kB);
+    // Twelve, less nine for the three frozen atoms. Not less three again.
+    FA_CHECK_CLOSE(dof, 3.0, 1e-9);
+}
+
+FA_TEST(the_velocity_draw_uses_the_count_that_survives_it) {
+    // The draw fills every atom and `set_velocities` then zeroes most of it,
+    // so rescaling over all 3N would leave what is left far too hot.
+    Atoms atoms = cluster();
+    atoms.set_constraints({std::make_shared<FixAtoms>(std::vector<std::size_t>{0, 1, 2})});
+    md::set_maxwell_boltzmann_velocities(atoms, 300.0, 5);
+
+    FA_CHECK_CLOSE(atoms.temperature(3), 300.0, 1e-9);
+    // And the unconstrained case is unchanged: 3N - 3 for the centre of mass.
+    Atoms free_atoms = cluster();
+    md::set_maxwell_boltzmann_velocities(free_atoms, 300.0, 5);
+    FA_CHECK_CLOSE(free_atoms.temperature(3 * 4 - 3), 300.0, 1e-9);
+}
+
 FA_TEST(the_temperature_is_computed_with_the_constrained_count) {
     Atoms atoms = cluster();
     atoms.set_constraints({std::make_shared<FixAtoms>(std::vector<std::size_t>{0, 1})});
@@ -295,12 +345,13 @@ FA_TEST(the_temperature_is_computed_with_the_constrained_count) {
                                            {"timestep", Value(1.0)}}));
     const md::DynamicsResult result = dynamics.run(atoms, 1);
 
-    // Twelve to start, three removed with the centre of mass, six more by the
-    // two frozen atoms. The count is not reported directly, so it is read back
-    // out of the temperature it was used to compute.
+    // Twelve to start and six gone with the two frozen atoms. Nothing further
+    // for the centre of mass: freezing atoms has already pinned it. The count
+    // is not reported directly, so it is read back out of the temperature it
+    // was used to compute.
     const md::DynamicsStep& first = result.history.front();
     const double dof = 2.0 * first.kinetic_energy / (first.temperature * units::kB);
-    FA_CHECK_CLOSE(dof, 12.0 - 3.0 - 6.0, 1e-9);
+    FA_CHECK_CLOSE(dof, 12.0 - 6.0, 1e-9);
 }
 
 FA_TEST(the_band_honours_them) {
@@ -337,6 +388,149 @@ FA_TEST(the_band_honours_them) {
         FA_CHECK_CLOSE((band.image(k).position(1) - Vec3{0.0, 2.25, 2.25}).norm(), 0.0, 1e-12);
     }
     FA_CHECK_CLOSE(band.profile().forward_barrier, 0.122725, 1e-4);
+}
+
+// ---------------------------------------------------------------------------
+// The input deck
+// ---------------------------------------------------------------------------
+
+FA_TEST(the_deck_parses_a_constraints_section) {
+    const io::InputDeck deck = io::read_yaml_string(R"(
+structure:
+  cell: [[15.2, 0, 0], [0, 15.2, 0], [0, 0, 24.0]]
+  pbc: xy
+  atoms:
+    - [Ar, 0.0, 0.0, 0.0]
+    - [Ar, 3.8, 0.0, 0.0]
+    - [Ar, 0.0, 3.8, 0.0]
+    - [Ar, 1.9, 1.9, 2.7]
+  constraints:
+    - {type: fix_atoms, indices: ["0-1"]}
+    - {type: fix_line, indices: [3], direction: z}
+    - {type: fix_plane, indices: [2], normal: [0, 0, 1]}
+)");
+    const ConstraintList& constraints = deck.atoms.constraints();
+    FA_CHECK(constraints.size() == 3);
+    FA_CHECK(constraints[0]->name() == "FixAtoms");
+    FA_CHECK(constraints[0]->indices().size() == 2);
+    FA_CHECK(constraints[1]->name() == "FixLine");
+    FA_CHECK(constraints[2]->name() == "FixPlane");
+    // 3 + 3 frozen, 2 for the line, 1 for the plane.
+    FA_CHECK(deck.atoms.constrained_degrees_of_freedom() == 9);
+}
+
+FA_TEST(a_deck_constraint_can_be_written_several_ways) {
+    const std::string head = R"(
+structure:
+  cell: 20.0
+  atoms: [[Ar, 0.0, 0.0, 0.0], [Ar, 3.8, 0.0, 0.0], [Ar, 0.0, 3.8, 0.0]]
+)";
+    // A mask instead of indices.
+    FA_CHECK(io::read_yaml_string(head + R"(  constraints:
+    - {type: fix_atoms, mask: [true, false, true]}
+)").atoms.constraints().front()->indices().size() == 2);
+
+    // A single constraint, not wrapped in a list.
+    FA_CHECK(io::read_yaml_string(head + R"(  constraints: {type: fix_atoms, indices: [0]}
+)").atoms.constraints().size() == 1);
+
+    // The spelling of the type is forgiving, and an axis can be a name or a
+    // vector; both must give the same normalised direction.
+    const Atoms named = io::read_yaml_string(head + R"(  constraints:
+    - {type: FixLine, atoms: [1], along: z}
+)").atoms;
+    const Atoms spelled = io::read_yaml_string(head + R"(  constraints:
+    - {type: fix-line, indices: [1], direction: [0, 0, 4]}
+)").atoms;
+    const auto* a = dynamic_cast<const FixLine*>(named.constraints().front().get());
+    const auto* b = dynamic_cast<const FixLine*>(spelled.constraints().front().get());
+    FA_CHECK(a != nullptr && b != nullptr);
+    FA_CHECK_CLOSE((a->direction() - b->direction()).norm(), 0.0, 1e-15);
+}
+
+FA_TEST(the_deck_rejects_constraints_it_cannot_build) {
+    const std::string head = R"(
+structure:
+  cell: 20.0
+  atoms: [[Ar, 0.0, 0.0, 0.0], [Ar, 3.8, 0.0, 0.0]]
+)";
+    // No such constraint.
+    FA_CHECK_THROWS(io::read_yaml_string(head + "  constraints: [{type: fix_torsion, indices: [0]}]\n"),
+                    InputError);
+    // No type at all.
+    FA_CHECK_THROWS(io::read_yaml_string(head + "  constraints: [{indices: [0]}]\n"), InputError);
+    // Nothing saying which atoms.
+    FA_CHECK_THROWS(io::read_yaml_string(head + "  constraints: [{type: fix_atoms}]\n"),
+                    InputError);
+    // A line with no direction.
+    FA_CHECK_THROWS(io::read_yaml_string(head + "  constraints: [{type: fix_line, indices: [0]}]\n"),
+                    InputError);
+    // An atom the structure does not have. This one is the reason the error is
+    // rewritten as an InputError: it is a fault in the file, not in the API.
+    FA_CHECK_THROWS(io::read_yaml_string(head + "  constraints: [{type: fix_atoms, indices: [7]}]\n"),
+                    InputError);
+    // Both spellings of the selection at once.
+    FA_CHECK_THROWS(
+        io::read_yaml_string(head + "  constraints: [{type: fix_atoms, indices: [0], mask: [true]}]\n"),
+        InputError);
+}
+
+FA_TEST(constraints_survive_a_round_trip_through_yaml) {
+    Atoms atoms = cluster();
+    atoms.set_constraints({
+        std::make_shared<FixAtoms>(std::vector<std::size_t>{0, 1}),
+        std::make_shared<FixLine>(std::vector<std::size_t>{2}, Vec3{0, 0, 1}),
+        std::make_shared<FixPlane>(std::vector<std::size_t>{3}, Vec3{1, 1, 0}),
+    });
+
+    const Atoms again = io::read_yaml_string(io::write_yaml_string(atoms)).atoms;
+    FA_CHECK(again.constraints().size() == 3);
+    FA_CHECK(again.constrained_degrees_of_freedom() ==
+             atoms.constrained_degrees_of_freedom());
+    for (std::size_t k = 0; k < 3; ++k) {
+        FA_CHECK(again.constraints()[k]->to_string() == atoms.constraints()[k]->to_string());
+    }
+    // A non-axis normal has to survive as numbers rather than being rounded to
+    // an axis name.
+    const auto* plane = dynamic_cast<const FixPlane*>(again.constraints()[2].get());
+    FA_CHECK(plane != nullptr);
+    FA_CHECK_CLOSE(plane->normal().x, 1.0 / std::sqrt(2.0), 1e-12);
+}
+
+FA_TEST(a_deck_constraint_reaches_the_run) {
+    // The point of putting them on the structure: the task never has to know.
+    const io::InputDeck deck = io::read_yaml_string(R"(
+structure:
+  cell: 20.0
+  atoms:
+    - [Ar, 0.0, 0.0, 0.0]
+    - [Ar, 3.6, 0.0, 0.0]
+    - [Ar, 0.0, 3.6, 0.0]
+    - [Ar, 1.8, 1.8, 2.6]
+  constraints:
+    - {type: fix_atoms, indices: ["0-1"]}
+    - {type: fix_plane, indices: [3], normal: z}
+
+simulation:
+  task: optimize
+  calculator:
+    name: lennard_jones
+    parameters: {epsilon: 0.0103, sigma: 3.40, cutoff: 9.0}
+  optimizer: {algorithm: lbfgs, fmax: 0.0001, max_steps: 500}
+)");
+    Atoms atoms = deck.atoms;
+    const std::vector<double> start = atoms.positions();
+    atoms.set_calculator(make_calculator(deck.simulation.calculator));
+
+    const optimize::OptimizationResult result =
+        optimize::make_optimizer(deck.simulation.optimizer)->run(atoms);
+    FA_CHECK(result.converged);
+
+    for (std::size_t c = 0; c < 6; ++c) {
+        FA_CHECK_CLOSE(atoms.positions()[c], start[c], 1e-15);
+    }
+    FA_CHECK_CLOSE(atoms.position(3).z, start[11], 1e-12);
+    FA_CHECK((atoms.position(2) - Vec3::load(start.data() + 6)).norm() > 1e-3);
 }
 
 FA_TEST_MAIN()

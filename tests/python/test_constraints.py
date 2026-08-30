@@ -212,3 +212,84 @@ def test_the_band_respects_them():
     assert band.profile().forward_barrier == pytest.approx(0.122725, abs=1e-4)
     for index in range(len(band)):
         assert band.image(index).positions[1] == pytest.approx(wall)
+
+
+# --------------------------------------------------------------------------
+# The input deck
+# --------------------------------------------------------------------------
+DECK = """
+structure:
+  cell: [[15.2, 0, 0], [0, 15.2, 0], [0, 0, 24.0]]
+  pbc: xy
+  atoms:
+    - [Ar, 0.0, 0.0, 0.0]
+    - [Ar, 3.6, 0.0, 0.0]
+    - [Ar, 0.0, 3.6, 0.0]
+    - [Ar, 1.8, 1.8, 2.6]
+  constraints:
+    - {type: fix_atoms, indices: ["0-1"]}
+    - {type: fix_plane, indices: [3], normal: z}
+
+simulation:
+  task: optimize
+  calculator:
+    name: lennard_jones
+    parameters: {epsilon: 0.0103, sigma: 3.40, cutoff: 9.0}
+  optimizer: {algorithm: lbfgs, fmax: 0.0001, max_steps: 500}
+"""
+
+
+def test_a_deck_carries_constraints_on_the_structure():
+    deck = fa.read_input_string(DECK)
+    names = [c.name for c in deck.atoms.constraints]
+    assert names == ["FixAtoms", "FixPlane"]
+    assert list(deck.atoms.constraints[0].indices) == [0, 1]
+    assert deck.atoms.constraints[1].normal == pytest.approx([0, 0, 1])
+    assert deck.atoms.constrained_degrees_of_freedom() == 7
+
+
+def test_a_deck_constraint_reaches_the_run():
+    """They sit on the structure, so no task has to know about them."""
+    deck = fa.read_input_string(DECK)
+    atoms = deck.atoms
+    start = atoms.positions.copy()
+    atoms.calc = fa.make_calculator(deck.simulation.calculator)
+
+    result = fa.make_optimizer(deck.simulation.optimizer).run(atoms)
+
+    assert result.converged
+    assert atoms.positions[[0, 1]] == pytest.approx(start[[0, 1]])
+    assert atoms.positions[3][2] == pytest.approx(start[3][2])
+    assert np.linalg.norm(atoms.positions[2] - start[2]) > 1e-3
+
+
+def test_a_mask_works_in_the_deck_too():
+    deck = fa.read_input_string("""
+structure:
+  cell: 20.0
+  atoms: [[Ar, 0, 0, 0], [Ar, 3.8, 0, 0], [Ar, 0, 3.8, 0]]
+  constraints:
+    - {type: fix_atoms, mask: [true, false, true]}
+""")
+    assert list(deck.atoms.constraints[0].indices) == [0, 2]
+
+
+def test_constraints_round_trip_through_yaml():
+    atoms = cluster()
+    atoms.constraints = [fa.FixAtoms([0, 1]), fa.FixLine([2], "z"), fa.FixPlane([3], [1, 1, 0])]
+
+    again = fa.read_input_string(fa.to_yaml(atoms)).atoms
+
+    assert [repr(c) for c in again.constraints] == [repr(c) for c in atoms.constraints]
+    assert again.constrained_degrees_of_freedom() == atoms.constrained_degrees_of_freedom()
+
+
+def test_the_deck_rejects_bad_constraints():
+    head = "structure:\n  cell: 20.0\n  atoms: [[Ar, 0, 0, 0], [Ar, 3.8, 0, 0]]\n"
+    for bad in ("  constraints: [{type: fix_torsion, indices: [0]}]",
+                "  constraints: [{indices: [0]}]",
+                "  constraints: [{type: fix_atoms}]",
+                "  constraints: [{type: fix_line, indices: [0]}]",
+                "  constraints: [{type: fix_atoms, indices: [7]}]"):
+        with pytest.raises(fa.InputError):
+            fa.read_input_string(head + bad + "\n")

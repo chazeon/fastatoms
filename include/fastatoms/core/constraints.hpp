@@ -193,6 +193,16 @@ void adjust_momenta(const ConstraintList& constraints, const Atoms& atoms,
                     std::vector<double>& momenta);
 [[nodiscard]] int removed_degrees_of_freedom(const ConstraintList& constraints,
                                              const Atoms& atoms);
+
+/// How many of the three uniform translations the constraints still allow.
+///
+/// Three when nothing is constrained. Removing the net momentum of a system
+/// takes away one degree of freedom per translation that is still a symmetry,
+/// and a constraint removes exactly those that move an atom it holds: a frozen
+/// atom leaves none, a plane leaves the two translations lying in it, a line
+/// leaves the one along it. Subtracting three regardless is how a slab with a
+/// frozen substrate ends up appearing to have no degrees of freedom at all.
+[[nodiscard]] int free_translations(const ConstraintList& constraints, const Atoms& atoms);
 /// @}
 
 }  // namespace fastatoms

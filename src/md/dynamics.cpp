@@ -256,7 +256,12 @@ void Dynamics::prepare(Atoms& atoms) {
 
     const bool fix_com = parameter("fix_center_of_mass").value_or(true);
     context_.timestep = timestep();
-    context_.degrees_of_freedom = momentum_degrees_of_freedom(atoms, fix_com);
+    // Start from 3N and take away what is actually gone. The centre-of-mass
+    // term is counted last and only for the translations the constraints leave
+    // intact: freezing a substrate already pins the centre of mass, and
+    // charging for it twice is how a slab with one adsorbate ends up looking
+    // like it has no degrees of freedom at all.
+    context_.degrees_of_freedom = momentum_degrees_of_freedom(atoms, false);
     context_.constraints = constraints_.get();
 
     if (constraints_ && !constraints_->empty()) {
@@ -277,13 +282,19 @@ void Dynamics::prepare(Atoms& atoms) {
     // summed, so an atom named by two constraints is not charged twice.
     if (atoms.has_constraints()) {
         context_.degrees_of_freedom -= atoms.constrained_degrees_of_freedom();
-        if (context_.degrees_of_freedom < 1) {
-            fail("the constraints remove every degree of freedom this structure has");
-        }
+    }
+    if (fix_com) {
+        context_.degrees_of_freedom -= free_translations(atoms.constraints(), atoms);
+    }
+    if (context_.degrees_of_freedom < 1) {
+        fail("the constraints remove every degree of freedom this structure has");
     }
     context_.temperature = temperature();
     context_.pressure = pressure();
-    context_.fix_center_of_mass = fix_com;
+    // Only while translation is a symmetry. With atoms frozen it is not, and
+    // "removing the net momentum" would take the mobile atoms' own momentum
+    // away from them every step - a Langevin run at 300 K settles at 74 K.
+    context_.fix_center_of_mass = fix_com && free_translations(atoms.constraints(), atoms) == 3;
     context_.step = 0;
     time_fs_ = 0.0;
 
