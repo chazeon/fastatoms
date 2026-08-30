@@ -1,0 +1,38 @@
+# Face-centred-cubic argon, the classic Lennard-Jones test system.
+#
+# Driven by python/examples/lennard_jones_md.py, which reads both the structure
+# and the run settings from this file.
+
+structure:
+  cell: 5.256                # A, the experimental fcc lattice constant at 4 K
+  pbc: true
+  coordinates: fractional
+  symbols: [Ar, Ar, Ar, Ar]
+  positions:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.5, 0.5]
+    - [0.5, 0.0, 0.5]
+    - [0.5, 0.5, 0.0]
+
+simulation:
+  task: md
+  calculator:
+    name: lennard_jones
+    parameters:
+      epsilon: 0.0103        # eV
+      sigma: 3.40            # A
+      cutoff: 8.5            # A
+  md:
+    ensemble: nve
+    timestep: 5.0            # fs
+    steps: 200
+    temperature: 30.0        # K, used to draw the initial velocities
+    seed: 20260829
+    initialize_velocities: true
+  output:
+    log: argon.log
+    interval: 20
+
+  # Keys FastAtoms does not interpret are still available through
+  # `deck.simulation.raw` and `deck.document`.
+  supercell: [3, 3, 3]

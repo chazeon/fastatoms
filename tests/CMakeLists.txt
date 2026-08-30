@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT
+#
+# C++ unit tests plus, when the extension is built, the Python test suite.
+
+set(FASTATOMS_CPP_TESTS
+    test_cell
+    test_atoms
+    test_neighbor_list
+    test_yaml)
+
+foreach(test_name IN LISTS FASTATOMS_CPP_TESTS)
+    add_executable(${test_name} cpp/${test_name}.cpp)
+    target_link_libraries(${test_name} PRIVATE fastatoms_core)
+    target_include_directories(${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp)
+    if(NOT MSVC)
+        target_compile_options(${test_name} PRIVATE -Wall -Wextra)
+    endif()
+    add_test(NAME cpp.${test_name} COMMAND ${test_name})
+endforeach()
+
+if(FASTATOMS_BUILD_PYTHON)
+    add_test(NAME python.bindings
+        COMMAND "${Python3_EXECUTABLE}" -m pytest -q
+                "${CMAKE_CURRENT_SOURCE_DIR}/python"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
+    set_tests_properties(python.bindings PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python"
+        DEPENDS fastatoms_python)
+endif()

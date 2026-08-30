@@ -67,3 +67,17 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+wheelhouse/
+
+# FastAtoms
+_deps/

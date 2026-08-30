@@ -1,0 +1,15 @@
+# A two-dimensional slab: periodic in x and y, free along z.
+#
+# Note `pbc: xy` and the compact [symbol, x, y, z] atom form.
+
+structure:
+  cell: [[2.86, 0.00, 0.00], [0.00, 2.86, 0.00], [0.00, 0.00, 20.00]]
+  pbc: xy
+  atoms:
+    - [Fe, 0.00, 0.00, 8.00]
+    - [Fe, 1.43, 1.43, 9.43]
+    - [Fe, 0.00, 0.00, 10.86]
+
+simulation:
+  task: single_point
+  calculator: {name: eam, parameters: {potential: Fe_mm.eam.fs}}

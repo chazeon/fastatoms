@@ -1,0 +1,24 @@
+# A single water molecule in vacuum, relaxed with a geometry optimiser.
+#
+#   fastatoms-run examples/water.yaml 1.2
+
+structure:
+  # No cell: an isolated molecule, non-periodic by default.
+  atoms:
+    - {symbol: O, position: [0.000, 0.000, 0.000], charge: -0.834}
+    - {symbol: H, position: [0.957, 0.000, 0.000], charge:  0.417}
+    - {symbol: H, position: [-0.240, 0.927, 0.000], charge:  0.417}
+
+simulation:
+  task: optimize
+  calculator:
+    name: tip3p
+    parameters:
+      cutoff: 9.0
+  optimizer:
+    algorithm: bfgs
+    fmax: 0.01             # eV/A
+    max_steps: 200
+  output:
+    trajectory: water_opt.yaml
+    interval: 1
