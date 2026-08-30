@@ -4,10 +4,11 @@ A high-performance C++ core for atomistic simulations, driven from Python.
 
 FastAtoms gives you an ASE-shaped API — `Atoms`, `Cell`, chemical symbols,
 periodic boundary conditions — on top of contiguous C++ storage, an O(N)
-neighbour list, and a YAML front end for structures and run settings. The
-Python layer is a thin binding: `atoms.positions` is a zero-copy numpy view
-straight into the C++ buffer, so a Python script can drive a simulation without
-paying for the convenience.
+neighbour list, a YAML front end for structures and run settings, and
+calculators that drive VASP, Quantum ESPRESSO and SIESTA. The Python layer is a
+thin binding: `atoms.positions` is a zero-copy numpy view straight into the C++
+buffer, so a Python script can drive a simulation without paying for the
+convenience.
 
 ```python
 import fastatoms as fa
@@ -28,6 +29,8 @@ atoms.positions += 0.01                     # writes into the C++ buffer
 include/fastatoms/     public headers (the C++ API)
   core/                vec3, cell, atoms, neighbor_list, elements, units
   io/                  parameters, yaml_input
+  calculators/         calculator, file_io_calculator, vasp, espresso, siesta
+  util/                process, text
 src/                   implementation
 python/
   bindings/            pybind11 extension, one file per bound area
@@ -151,6 +154,101 @@ r_ij = positions[j] + shifts @ cell - positions[i]
 Å·√(amu/eV) ≈ 10.18 fs — so values pass between the two libraries unconverted.
 `fastatoms.units` holds the constants.
 
+## Calculators
+
+A calculator evaluates energies, forces and stresses for an `Atoms` object.
+Attach one and the structure can answer for itself:
+
+```python
+atoms.calc = fa.Vasp(xc="pbe", encut=400, kpts=[4, 4, 4], directory="run")
+
+energy = atoms.get_potential_energy()   # eV
+forces = atoms.get_forces()             # eV/A, shape (N, 3)
+stress = atoms.get_stress()             # eV/A^3, Voigt (xx, yy, zz, yz, xz, xy)
+```
+
+That is one VASP run, not three: results are cached and only recomputed when
+the structure actually changes. Forces are also written onto the structure as
+the per-atom array `forces`, so they follow it through slicing and writing.
+
+### The three DFT interfaces
+
+| | writes | runs | reads |
+| --- | --- | --- | --- |
+| `fa.Vasp` | POSCAR, INCAR, KPOINTS, POTCAR | `$VASP_COMMAND`, else `vasp_std` | OUTCAR |
+| `fa.Espresso` | pw.in | `$ASE_ESPRESSO_COMMAND`, else `pw.x -in pw.in > pw.out` | pw.out |
+| `fa.Siesta` | *label*.fdf, pseudopotentials | `$SIESTA_COMMAND`, else `siesta < siesta.fdf > siesta.out` | *label*.out, *label*.FORCE_STRESS |
+
+Each takes the settings its own code expects, and anything FastAtoms does not
+interpret is passed straight through to the right place:
+
+```python
+# encut, ismear, sigma... become INCAR tags
+fa.Vasp(xc="pbe", encut=400, ismear=0, sigma=0.05, kpts=[4, 4, 4])
+
+# each keyword is routed to the namelist that owns it
+fa.Espresso(pseudopotentials={"Si": "Si.upf"}, ecutwfc=40.0, conv_thr=1e-8)
+
+# underscores become dots: dm_tolerance -> dm.tolerance
+fa.Siesta(xc="pbe", mesh_cutoff=250.0, dm_tolerance=1e-4, kpts=[4, 4, 4])
+```
+
+`fa.LennardJones` is a built-in analytic calculator that needs no external
+program — useful for checking a workflow before pointing it at a DFT code, and
+what the test suite uses to verify the interface against finite differences.
+
+### Choosing the engine from the input file
+
+```yaml
+simulation:
+  calculator:
+    name: vasp          # or espresso / qe / pw / siesta / lennard_jones
+    parameters:
+      directory: vasp-run
+      xc: pbe
+      kpts: [8, 8, 8]
+      encut: 400
+```
+
+```python
+deck = fa.read("dft.yaml")
+atoms = deck.atoms
+atoms.calc = deck.make_calculator()          # keywords here override the file
+energy = atoms.get_potential_energy()
+```
+
+Swapping engines is one edit to that block; nothing in the driving script
+changes. `fa.register_calculator(name, factory)` adds your own.
+
+### Running elsewhere
+
+The two halves work separately, which is what an HPC workflow usually needs:
+
+```python
+calc = fa.Vasp(xc="pbe", encut=400)
+calc.write_inputs(atoms, "job-01")     # stage a directory, run nothing
+...                                    # submit job-01 to a queue
+calc.read_results("job-01")            # parse it afterwards
+calc.results.energy, calc.results.stress
+```
+
+`command` is a shell expression, so `mpirun -np 64 vasp_std` and job-launcher
+wrappers work as written. A non-zero exit, a signal, or a `timeout` produces a
+`CalculatorError` quoting the command, the directory, and the tail of the log.
+
+### Conventions
+
+Energies are in eV, forces in eV/Å, and the stress is in eV/Å³ in Voigt order
+`(xx, yy, zz, yz, xz, xy)` with the ASE sign convention `σ = (1/V) ∂E/∂ε`. Each
+interface converts from its code's own units and sign — kB and `XX YY ZZ XY YZ
+ZX` for VASP, Ry/bohr³ with the opposite sign for Quantum ESPRESSO, Ry/bohr³
+for SIESTA's `.FORCE_STRESS`. `results.extra` carries what is left over: Fermi
+level, iteration counts, convergence flags.
+
+Because VASP requires atoms grouped by species, `fa.Vasp` reorders them in the
+POSCAR and permutes the forces back, so what you read matches the order you
+gave.
+
 ## Performance
 
 Design choices that matter:
@@ -192,6 +290,9 @@ PYTHONPATH=build/python python python/examples/neighbor_analysis.py
 
 # A complete Lennard-Jones MD run: C++ neighbour list, numpy forces
 PYTHONPATH=build/python python python/examples/lennard_jones_md.py examples/argon.yaml
+
+# Calculators: generated VASP/QE/SIESTA inputs, then an equation of state
+PYTHONPATH=build/python python python/examples/dft_calculator.py examples/dft_silicon.yaml
 ```
 
 The MD example conserves energy to under 1 µeV/atom over 200 steps, which is
@@ -207,16 +308,30 @@ target_link_libraries(my_code PRIVATE FastAtoms::core)
 ```cpp
 #include "fastatoms/fastatoms.hpp"
 
-const auto deck = fastatoms::io::read_yaml_file("input.yaml");
+auto deck = fastatoms::io::read_yaml_file("input.yaml");
 const auto pairs = fastatoms::build_neighbor_list(deck.atoms, 5.0);
+
+deck.atoms.set_calculator(fastatoms::make_calculator(deck.simulation.calculator));
+const double energy = deck.atoms.get_potential_energy();
+const auto stress = deck.atoms.get_stress();
 ```
 
 ## Testing
 
-`ctest` runs four C++ suites and the Python suite. The neighbour list is
+`ctest` runs six C++ suites and the Python suite. The neighbour list is
 checked against a brute-force O(N² × images) reference for cubic, triclinic,
 slab, isolated and smaller-than-cutoff cells; the minimum-image convention is
 checked the same way.
+
+The calculator layer is checked in two parts. Forces and the stress sign and
+Voigt ordering are verified against finite differences of the analytic
+calculator. The DFT interfaces are checked against representative excerpts of
+each code's real output, and the full write/execute/parse pipeline runs against
+a stand-in engine — a shell script that drops a canned output file in place —
+so everything but the physics of the DFT codes themselves is exercised. **The
+parsers have not been run against live VASP, Quantum ESPRESSO or SIESTA
+installations**; treat the first real run as the check that your version's
+output format matches.
 
 ```sh
 ctest --test-dir build --output-on-failure

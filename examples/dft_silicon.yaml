@@ -1,0 +1,76 @@
+# Bulk silicon with a DFT calculator attached.
+#
+#   python python/examples/dft_calculator.py examples/dft_silicon.yaml
+#
+# The `simulation.calculator` section is what FastAtoms turns into a
+# Calculator object; swapping engines means editing this one block.
+
+structure:
+  cell: {a: 5.43, b: 5.43, c: 5.43}
+  pbc: [true, true, true]
+  coordinates: fractional
+  symbols: [Si, Si, Si, Si, Si, Si, Si, Si]
+  positions:
+    - [0.00, 0.00, 0.00]
+    - [0.00, 0.50, 0.50]
+    - [0.50, 0.00, 0.50]
+    - [0.50, 0.50, 0.00]
+    - [0.25, 0.25, 0.25]
+    - [0.25, 0.75, 0.75]
+    - [0.75, 0.25, 0.75]
+    - [0.75, 0.75, 0.25]
+
+simulation:
+  task: single_point
+
+  calculator:
+    name: vasp
+    parameters:
+      directory: vasp-run
+      # command: mpirun -np 16 vasp_std     # else $VASP_COMMAND, else vasp_std
+      # pp_path: /opt/vasp/potentials       # else $VASP_PP_PATH
+      xc: pbe
+      kpts: [8, 8, 8]
+      # Anything FastAtoms does not interpret becomes an INCAR tag.
+      encut: 400
+      ediff: 1.0e-6
+      ismear: 0
+      sigma: 0.05
+      lreal: false
+      lwave: false
+      lcharg: false
+
+  # ---------------------------------------------------------------------
+  # The same structure with Quantum ESPRESSO instead:
+  #
+  # calculator:
+  #   name: espresso
+  #   parameters:
+  #     directory: pw-run
+  #     pseudopotentials: {Si: Si.pbe-n-kjpaw_psl.1.0.0.UPF}
+  #     pseudo_dir: /opt/espresso/pseudo    # else $ESPRESSO_PSEUDO
+  #     kpts: [8, 8, 8]
+  #     ecutwfc: 40.0        # routed to &SYSTEM
+  #     ecutrho: 320.0       # routed to &SYSTEM
+  #     conv_thr: 1.0e-8     # routed to &ELECTRONS
+  #     occupations: smearing
+  #     smearing: gaussian
+  #     degauss: 0.01
+  #
+  # ...or with SIESTA:
+  #
+  # calculator:
+  #   name: siesta
+  #   parameters:
+  #     directory: siesta-run
+  #     label: si8
+  #     pp_path: /opt/siesta/pseudos        # else $SIESTA_PP_PATH
+  #     xc: pbe
+  #     kpts: [8, 8, 8]
+  #     mesh_cutoff: 300.0                  # Ry
+  #     dm_tolerance: 1.0e-4                # -> dm.tolerance
+  #     paobasissize: DZP
+  # ---------------------------------------------------------------------
+
+  output:
+    log: silicon-dft.log

@@ -90,7 +90,7 @@ Cell cell_from_object(const py::object& source) {
 
 }  // namespace
 
-void bind_atoms(py::module_& m) {
+py::class_<Atoms> bind_atoms(py::module_& m) {
     py::class_<AtomProxy>(m, "Atom", R"doc(
 A view on a single atom of an :class:`Atoms` object.
 
@@ -150,7 +150,7 @@ moves the atom. The view is invalidated if the parent changes size.
             return std::string(buffer);
         });
 
-    py::class_<Atoms>(m, "Atoms", R"doc(
+    py::class_<Atoms> atoms_class(m, "Atoms", R"doc(
 A collection of atoms in an optionally periodic cell.
 
 The API mirrors ASE's ``Atoms`` closely enough that most scripts port over
@@ -161,8 +161,9 @@ them writes straight into the C++ buffers.
 .. warning::
    A view is invalidated when the structure changes size (``append``,
    ``extend``, ``del``). Re-read the property after such a call.
-)doc")
-        .def(py::init([](const py::object& symbols, const py::object& positions,
+)doc");
+
+    atoms_class.def(py::init([](const py::object& symbols, const py::object& positions,
                          const py::object& numbers, const py::object& cell,
                          const py::object& pbc, const py::object& masses,
                          const py::object& charges, const py::object& tags,
@@ -244,10 +245,24 @@ lengths, or a single number for a cubic cell.
         // --- size and identity --------------------------------------------
         .def("__len__", &Atoms::size)
         .def("__repr__", &Atoms::to_string)
-        .def("copy", [](const Atoms& self) { return Atoms(self); },
-             "An independent copy of this structure.")
-        .def("__copy__", [](const Atoms& self) { return Atoms(self); })
-        .def("__deepcopy__", [](const Atoms& self, const py::dict&) { return Atoms(self); },
+        // As in ASE, a copy does not carry the calculator over: a stored
+        // snapshot should not keep a live engine alive.
+        .def("copy", [](const Atoms& self) {
+                 Atoms out(self);
+                 out.set_calculator(nullptr);
+                 return out;
+             },
+             "An independent copy of this structure, without the calculator.")
+        .def("__copy__", [](const Atoms& self) {
+                 Atoms out(self);
+                 out.set_calculator(nullptr);
+                 return out;
+             })
+        .def("__deepcopy__", [](const Atoms& self, const py::dict&) {
+                 Atoms out(self);
+                 out.set_calculator(nullptr);
+                 return out;
+             },
              py::arg("memo"))
 
         // --- positions ------------------------------------------------------
@@ -702,6 +717,8 @@ lengths, or a single number for a cubic cell.
             }
             return out;
         }, "The per-atom arrays as a dict; 'positions' and 'numbers' are live views.");
+
+    return atoms_class;
 }
 
 }  // namespace fastatoms::bindings

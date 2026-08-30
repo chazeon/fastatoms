@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(FastAtoms
-    VERSION 0.1.0
+    VERSION 0.1.1
     DESCRIPTION "High-performance C++ core for atomistic simulations, driven from Python"
     LANGUAGES CXX)
 
@@ -56,6 +56,16 @@ set(FASTATOMS_CORE_SOURCES
     src/core/neighbor_list.cpp
     src/io/parameters.cpp
     src/io/yaml_input.cpp
+    src/calculators/atoms_calculator.cpp
+    src/calculators/calculator.cpp
+    src/calculators/file_io_calculator.cpp
+    src/calculators/lennard_jones.cpp
+    src/calculators/quantum_espresso.cpp
+    src/calculators/registry.cpp
+    src/calculators/siesta.cpp
+    src/calculators/vasp.cpp
+    src/util/process.cpp
+    src/util/text.cpp
     src/version.cpp)
 
 set(FASTATOMS_PUBLIC_HEADERS
@@ -67,7 +77,17 @@ set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/core/units.hpp
     include/fastatoms/core/vec3.hpp
     include/fastatoms/io/parameters.hpp
-    include/fastatoms/io/yaml_input.hpp)
+    include/fastatoms/io/yaml_input.hpp
+    include/fastatoms/calculators/calculator.hpp
+    include/fastatoms/calculators/file_io_calculator.hpp
+    include/fastatoms/calculators/lennard_jones.hpp
+    include/fastatoms/calculators/quantum_espresso.hpp
+    include/fastatoms/calculators/registry.hpp
+    include/fastatoms/calculators/results.hpp
+    include/fastatoms/calculators/siesta.hpp
+    include/fastatoms/calculators/vasp.hpp
+    include/fastatoms/util/process.hpp
+    include/fastatoms/util/text.hpp)
 
 if(FASTATOMS_SHARED_CORE)
     add_library(fastatoms_core SHARED ${FASTATOMS_CORE_SOURCES} ${FASTATOMS_PUBLIC_HEADERS})

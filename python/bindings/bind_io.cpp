@@ -3,7 +3,7 @@
 
 namespace fastatoms::bindings {
 
-void bind_io(py::module_& m) {
+py::class_<io::InputDeck> bind_io(py::module_& m) {
     py::enum_<Task>(m, "Task", "What an input file asks the run to do.")
         .value("single_point", Task::SinglePoint)
         .value("md", Task::MolecularDynamics)
@@ -81,7 +81,8 @@ void bind_io(py::module_& m) {
                    self.calculator.name + "')";
         });
 
-    py::class_<io::InputDeck>(m, "InputDeck", "A parsed input document.")
+    py::class_<io::InputDeck> deck(m, "InputDeck", "A parsed input document.");
+    deck
         .def(py::init<>())
         .def_readwrite("atoms", &io::InputDeck::atoms)
         .def_readwrite("simulation", &io::InputDeck::simulation)
@@ -90,6 +91,7 @@ void bind_io(py::module_& m) {
         .def("__repr__", [](const io::InputDeck& self) {
             return "InputDeck(" + self.atoms.to_string() + ", " + self.simulation.task_name + ")";
         });
+
 
     m.def(
         "read", [](const std::string& path) { return io::read_yaml_file(path); }, py::arg("path"),
@@ -137,6 +139,8 @@ void bind_io(py::module_& m) {
         [](const Value& simulation) { return io::simulation_from_value(simulation); },
         py::arg("simulation"),
         "Build :class:`SimulationParameters` from a dict.");
+
+    return deck;
 }
 
 }  // namespace fastatoms::bindings

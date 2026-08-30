@@ -4,6 +4,14 @@
 /// \file fastatoms.hpp
 /// \brief Umbrella header: includes the whole public API.
 
+#include "fastatoms/calculators/calculator.hpp"
+#include "fastatoms/calculators/file_io_calculator.hpp"
+#include "fastatoms/calculators/lennard_jones.hpp"
+#include "fastatoms/calculators/quantum_espresso.hpp"
+#include "fastatoms/calculators/registry.hpp"
+#include "fastatoms/calculators/results.hpp"
+#include "fastatoms/calculators/siesta.hpp"
+#include "fastatoms/calculators/vasp.hpp"
 #include "fastatoms/core/atoms.hpp"
 #include "fastatoms/core/cell.hpp"
 #include "fastatoms/core/elements.hpp"
@@ -12,6 +20,8 @@
 #include "fastatoms/core/vec3.hpp"
 #include "fastatoms/io/parameters.hpp"
 #include "fastatoms/io/yaml_input.hpp"
+#include "fastatoms/util/process.hpp"
+#include "fastatoms/util/text.hpp"
 
 /// FastAtoms - a high-performance C++ core for atomistic simulations.
 namespace fastatoms {

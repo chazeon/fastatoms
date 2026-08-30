@@ -230,8 +230,18 @@ py::array_t<T> make_view(T* data, std::vector<py::ssize_t> shape, py::handle bas
 
 void bind_elements(py::module_& m);
 void bind_cell(py::module_& m);
-void bind_atoms(py::module_& m);
+/// Returns the `Atoms` class so that later registration passes can add
+/// methods to it without redeclaring the type.
+py::class_<Atoms> bind_atoms(py::module_& m);
 void bind_neighbor_list(py::module_& m);
-void bind_io(py::module_& m);
+/// Returns the `InputDeck` class so the calculator bindings can add the
+/// `make_calculator()` shortcut to it.
+py::class_<io::InputDeck> bind_io(py::module_& m);
+void bind_calculators(py::module_& m, py::class_<Atoms>& atoms,
+                      py::class_<io::InputDeck>& deck);
+
+/// Convert a Python property specification - a `Property`, a string, or a
+/// sequence of either - into the C++ list. `None` means the default set.
+[[nodiscard]] std::vector<Property> parse_properties(const py::object& value);
 
 }  // namespace fastatoms::bindings

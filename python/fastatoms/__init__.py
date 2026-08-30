@@ -23,6 +23,25 @@ Reading an input file
 
 >>> deck = fa.read("input.yaml")                       # doctest: +SKIP
 >>> deck.atoms, deck.simulation.md.timestep_fs         # doctest: +SKIP
+
+Attaching a calculator
+----------------------
+
+>>> atoms = fa.Atoms("Ar2", [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]], cell=12.0, pbc=True)
+>>> atoms.calc = fa.LennardJones(epsilon=0.0103, sigma=3.40)
+>>> atoms.get_potential_energy() < 0.0
+True
+>>> atoms.get_forces().shape
+(2, 3)
+>>> atoms.get_stress().shape
+(6,)
+
+For a DFT run, swap in one of the file-based calculators - the rest of the
+script is unchanged::
+
+    atoms.calc = fa.Vasp(xc="pbe", encut=400, kpts=[4, 4, 4], directory="run")
+    atoms.calc = fa.Espresso(pseudopotentials={"Si": "Si.upf"}, ecutwfc=40.0)
+    atoms.calc = fa.Siesta(xc="pbe", mesh_cutoff=250.0)
 """
 
 from __future__ import annotations
@@ -33,32 +52,49 @@ from ._core import (
     MAX_ATOMIC_NUMBER,
     Atom,
     Atoms,
+    Calculator,
+    CalculatorError,
     CalculatorParameters,
     Cell,
+    Espresso,
+    FileIOCalculator,
+    LennardJones,
     InputDeck,
     InputError,
     MolecularDynamicsParameters,
     NeighborList,
     OptimizerParameters,
     OutputParameters,
+    Property,
+    QuantumEspresso,
+    Results,
     SimulationParameters,
+    Siesta,
     Task,
+    Vasp,
     __version__,
     atomic_mass,
     atoms_from_dict,
     covalent_radius,
+    make_calculator,
+    matrix_to_voigt,
     natural_cutoffs,
     neighbor_list,
     number_from_symbol,
     parse_yaml,
     parse_yaml_file,
+    pressure_from_stress,
     read,
     read_atoms,
     read_string,
+    register_calculator,
+    registered_calculators,
     simulation_from_dict,
     symbol_from_number,
     to_yaml,
     units,
+    vasp_species_layout,
+    voigt_to_matrix,
     write,
 )
 
@@ -66,34 +102,51 @@ __all__ = [
     "MAX_ATOMIC_NUMBER",
     "Atom",
     "Atoms",
+    "Calculator",
+    "CalculatorError",
     "CalculatorParameters",
     "Cell",
+    "Espresso",
+    "FileIOCalculator",
     "InputDeck",
     "InputError",
+    "LennardJones",
     "MolecularDynamicsParameters",
     "NeighborList",
     "OptimizerParameters",
     "OutputParameters",
+    "Property",
+    "QuantumEspresso",
+    "Results",
     "SimulationParameters",
+    "Siesta",
     "Task",
+    "Vasp",
     "__version__",
     "atomic_mass",
     "atoms_from_dict",
     "covalent_radius",
     "from_ase",
+    "make_calculator",
+    "matrix_to_voigt",
     "natural_cutoffs",
     "neighbor_list",
     "number_from_symbol",
     "parse_yaml",
     "parse_yaml_file",
+    "pressure_from_stress",
     "read",
     "read_atoms",
     "read_string",
+    "register_calculator",
+    "registered_calculators",
     "simulation_from_dict",
     "symbol_from_number",
     "to_ase",
     "to_yaml",
     "units",
+    "vasp_species_layout",
+    "voigt_to_matrix",
     "write",
 ]
 

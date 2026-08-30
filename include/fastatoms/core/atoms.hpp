@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,8 @@
 #include "fastatoms/core/vec3.hpp"
 
 namespace fastatoms {
+
+class Calculator;
 
 /// A collection of atoms in an optionally periodic cell.
 ///
@@ -219,6 +222,33 @@ public:
     [[nodiscard]] Atoms repeat(int nx, int ny, int nz) const;
     /// @}
 
+    /// \name Calculator
+    ///
+    /// Attaching a calculator lets the structure evaluate its own energy,
+    /// forces and stress. The calculator caches results and only re-runs the
+    /// underlying engine when the structure has actually changed.
+    ///
+    /// `subset`, `repeat` and the Python `copy()` deliberately do not carry the
+    /// calculator over, matching ASE; a plain C++ copy shares it.
+    /// @{
+    void set_calculator(std::shared_ptr<Calculator> calculator);
+    [[nodiscard]] const std::shared_ptr<Calculator>& calculator() const noexcept {
+        return calculator_;
+    }
+    [[nodiscard]] bool has_calculator() const noexcept { return calculator_ != nullptr; }
+
+    /// Potential energy in eV.
+    /// \throws CalculatorError if no calculator is attached.
+    [[nodiscard]] double get_potential_energy(bool force_consistent = false);
+
+    /// Forces in eV/angstrom, 3N atom-major. Also stored as the per-atom array
+    /// "forces".
+    [[nodiscard]] std::vector<double> get_forces();
+
+    /// Stress in eV/angstrom^3, Voigt order (xx, yy, zz, yz, xz, xy).
+    [[nodiscard]] std::array<double, 6> get_stress();
+    /// @}
+
     /// One-line summary used by the Python `repr`.
     [[nodiscard]] std::string to_string() const;
 
@@ -239,6 +269,7 @@ private:
     std::map<std::string, Array> extra_;
 
     Cell cell_{};
+    std::shared_ptr<Calculator> calculator_{};
 };
 
 }  // namespace fastatoms

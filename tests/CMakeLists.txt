@@ -6,7 +6,9 @@ set(FASTATOMS_CPP_TESTS
     test_cell
     test_atoms
     test_neighbor_list
-    test_yaml)
+    test_yaml
+    test_calculators
+    test_dft_calculators)
 
 foreach(test_name IN LISTS FASTATOMS_CPP_TESTS)
     add_executable(${test_name} cpp/${test_name}.cpp)

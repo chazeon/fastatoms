@@ -81,3 +81,6 @@ wheelhouse/
 
 # FastAtoms
 _deps/
+
+# Agent working notes (local only)
+CLAUDE.md

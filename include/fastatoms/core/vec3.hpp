@@ -222,6 +222,14 @@ struct Mat3 {
     return r;
 }
 
+[[nodiscard]] constexpr Mat3 operator*(Mat3 A, double s) noexcept {
+    for (double& value : A.m) {
+        value *= s;
+    }
+    return A;
+}
+[[nodiscard]] constexpr Mat3 operator*(double s, Mat3 A) noexcept { return A * s; }
+
 constexpr bool operator==(const Mat3& a, const Mat3& b) noexcept { return a.m == b.m; }
 constexpr bool operator!=(const Mat3& a, const Mat3& b) noexcept { return !(a == b); }
 
