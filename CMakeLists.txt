@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(FastAtoms
-    VERSION 0.2.2
+    VERSION 0.2.3
     DESCRIPTION "High-performance C++ core for atomistic simulations, driven from Python"
     LANGUAGES CXX)
 
@@ -60,6 +60,7 @@ include(cmake/FastAtomsDependencies.cmake)
 # ---------------------------------------------------------------------------
 set(FASTATOMS_CORE_SOURCES
     src/build/bulk.cpp
+    src/build/surface.cpp
     src/build/cluster.cpp
     src/build/nanotube.cpp
     src/build/twod.cpp
@@ -82,9 +83,12 @@ set(FASTATOMS_CORE_SOURCES
     src/core/neighbor_list.cpp
     src/io/extxyz.cpp
     src/io/formats.cpp
+    src/io/vasp.cpp
+    src/io/cif.cpp
     src/io/parameters.cpp
     src/io/yaml_input.cpp
     src/calculators/atoms_calculator.cpp
+    src/calculators/single_point.cpp
     src/calculators/calculator.cpp
     src/calculators/file_io_calculator.cpp
     src/calculators/lennard_jones.cpp
@@ -135,6 +139,7 @@ set(FASTATOMS_CORE_SOURCES
 set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/fastatoms.hpp
     include/fastatoms/build/bulk.hpp
+    include/fastatoms/build/surface.hpp
     include/fastatoms/build/cluster.hpp
     include/fastatoms/build/nanotube.hpp
     include/fastatoms/build/twod.hpp
@@ -159,9 +164,12 @@ set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/core/vec3.hpp
     include/fastatoms/io/extxyz.hpp
     include/fastatoms/io/formats.hpp
+    include/fastatoms/io/vasp.hpp
+    include/fastatoms/io/cif.hpp
     include/fastatoms/io/parameters.hpp
     include/fastatoms/io/yaml_input.hpp
     include/fastatoms/calculators/calculator.hpp
+    include/fastatoms/calculators/single_point.hpp
     include/fastatoms/calculators/file_io_calculator.hpp
     include/fastatoms/calculators/lennard_jones.hpp
     include/fastatoms/calculators/mlip.hpp

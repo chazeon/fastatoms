@@ -27,6 +27,10 @@ namespace fastatoms::io {
 enum class Format {
     Extxyz,   ///< .extxyz, .xyz - the default
     Yaml,     ///< .yaml, .yml - structures, and the only format for input decks
+    Poscar,   ///< POSCAR, CONTCAR, .vasp - one structure
+    Xdatcar,  ///< XDATCAR - a trajectory
+    Outcar,   ///< OUTCAR - structures with the results VASP reported for them
+    Cif,      ///< .cif - crystallography's own format, symmetry and all
 };
 
 [[nodiscard]] std::string_view format_name(Format format);
@@ -37,6 +41,16 @@ enum class Format {
 /// means in practice: a file called `dump` or `trajectory.out` is read as
 /// extxyz rather than refused.
 [[nodiscard]] Format format_from_path(std::string_view path);
+
+/// The name of a format this build recognises but cannot handle, or empty.
+///
+/// A path ending `.cif` or `POSCAR` names something specific, and writing
+/// extended XYZ into it would produce a file that is wrong in a way nothing
+/// detects until someone else tries to read it. Recognising the name is what
+/// lets `write` refuse instead. An unrecognised extension - `dump`,
+/// `trajectory.out`, no extension at all - is not in this list and still falls
+/// back to extended XYZ.
+[[nodiscard]] std::string_view unsupported_format_name(std::string_view path);
 
 /// Parse a format by name: "extxyz", "xyz", "yaml", "yml".
 /// \throws std::invalid_argument if the name is not one of those.

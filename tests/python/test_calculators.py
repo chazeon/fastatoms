@@ -231,7 +231,7 @@ def test_properties_accept_strings_and_enums():
 # VASP
 # --------------------------------------------------------------------------
 def test_vasp_input_generation():
-    calc = fa.Vasp(xc="pbe", encut=420, ismear=0, sigma=0.05, lwave=False, kpts=[4, 4, 2])
+    calc = fa.VASP(xc="pbe", encut=420, ismear=0, sigma=0.05, lwave=False, kpts=[4, 4, 2])
 
     incar = calc.incar_string()
     assert "GGA = PE" in incar
@@ -260,7 +260,7 @@ def test_vasp_species_grouping():
 
 
 def test_vasp_outcar_parsing():
-    results = fa.Vasp.parse_outcar(OUTCAR)
+    results = fa.VASP.parse_outcar(OUTCAR)
 
     assert results.energy == pytest.approx(-10.84012340)
     assert results.free_energy == pytest.approx(-10.84567890)
@@ -280,7 +280,7 @@ def test_vasp_end_to_end(tmp_path):
     write_stub_engine(tmp_path, "stub_vasp.sh", "OUTCAR", OUTCAR)
 
     atoms = silicon()
-    atoms.calc = fa.Vasp(
+    atoms.calc = fa.VASP(
         directory=str(tmp_path),
         command="sh stub_vasp.sh",
         write_potcar=False,
@@ -301,7 +301,7 @@ def test_vasp_end_to_end(tmp_path):
 
 def test_vasp_failure_is_reported(tmp_path):
     atoms = silicon()
-    atoms.calc = fa.Vasp(
+    atoms.calc = fa.VASP(
         directory=str(tmp_path),
         command="echo 'ERROR: ZBRENT: fatal error' >&2; exit 1",
         write_potcar=False,
@@ -316,15 +316,15 @@ def test_vasp_failure_is_reported(tmp_path):
 # Quantum ESPRESSO
 # --------------------------------------------------------------------------
 def test_espresso_namelist_routing():
-    assert fa.Espresso.namelist_for("calculation") == "control"
-    assert fa.Espresso.namelist_for("ecutwfc") == "system"
-    assert fa.Espresso.namelist_for("conv_thr") == "electrons"
-    assert fa.Espresso.namelist_for("press") == "cell"
-    assert fa.QuantumEspresso is fa.Espresso
+    assert fa.QuantumEspresso.namelist_for("calculation") == "control"
+    assert fa.QuantumEspresso.namelist_for("ecutwfc") == "system"
+    assert fa.QuantumEspresso.namelist_for("conv_thr") == "electrons"
+    assert fa.QuantumEspresso.namelist_for("press") == "cell"
+    assert fa.QuantumEspresso.__name__ == "QuantumEspresso"
 
 
 def test_espresso_input_generation():
-    calc = fa.Espresso(
+    calc = fa.QuantumEspresso(
         pseudopotentials={"Si": "Si.pbe-n-kjpaw_psl.1.0.0.UPF"},
         pseudo_dir="/opt/pseudos",
         ecutwfc=40.0,
@@ -342,11 +342,11 @@ def test_espresso_input_generation():
     assert "K_POINTS automatic" in deck
 
     with pytest.raises(fa.CalculatorError):
-        fa.Espresso().input_string(silicon())
+        fa.QuantumEspresso().input_string(silicon())
 
 
 def test_espresso_output_parsing():
-    results = fa.Espresso.parse_output_text(PW_OUTPUT)
+    results = fa.QuantumEspresso.parse_output_text(PW_OUTPUT)
 
     assert results.energy == pytest.approx(-22.79981270 * RYDBERG_IN_EV)
     force_scale = RYDBERG_IN_EV / BOHR_IN_ANGSTROM
@@ -364,7 +364,7 @@ def test_espresso_end_to_end(tmp_path):
     write_stub_engine(tmp_path, "stub_pw.sh", "pw.out", PW_OUTPUT)
 
     atoms = silicon()
-    atoms.calc = fa.Espresso(
+    atoms.calc = fa.QuantumEspresso(
         directory=str(tmp_path),
         command="sh stub_pw.sh",
         pseudopotentials={"Si": "Si.upf"},
@@ -378,7 +378,7 @@ def test_espresso_end_to_end(tmp_path):
 # SIESTA
 # --------------------------------------------------------------------------
 def test_siesta_input_generation():
-    calc = fa.Siesta(label="run", xc="pbe", mesh_cutoff=250.0, kpts=[2, 2, 3], dm_tolerance=1e-4)
+    calc = fa.SIESTA(label="run", xc="pbe", mesh_cutoff=250.0, kpts=[2, 2, 3], dm_tolerance=1e-4)
     fdf = calc.fdf_string(silicon())
 
     assert "SystemLabel     run" in fdf
@@ -393,7 +393,7 @@ def test_siesta_input_generation():
 
 
 def test_siesta_output_parsing():
-    results = fa.Siesta.parse_output_text(SIESTA_OUTPUT)
+    results = fa.SIESTA.parse_output_text(SIESTA_OUTPUT)
     assert results.energy == pytest.approx(-215.245972)
     assert results.free_energy == pytest.approx(-215.246500)
     assert results.forces[0] == pytest.approx([0.01, 0.02, 0.03])
@@ -405,7 +405,7 @@ def test_siesta_end_to_end(tmp_path):
     write_stub_engine(tmp_path, "stub_siesta.sh", "siesta.out", SIESTA_OUTPUT)
 
     atoms = silicon()
-    atoms.calc = fa.Siesta(
+    atoms.calc = fa.SIESTA(
         directory=str(tmp_path), command="sh stub_siesta.sh", mesh_cutoff=200.0
     )
     assert atoms.get_potential_energy() == pytest.approx(-215.245972)
@@ -414,7 +414,7 @@ def test_siesta_end_to_end(tmp_path):
 
 def test_siesta_missing_pseudopotential(tmp_path):
     atoms = silicon()
-    atoms.calc = fa.Siesta(directory=str(tmp_path), command="true")
+    atoms.calc = fa.SIESTA(directory=str(tmp_path), command="true")
     with pytest.raises(fa.CalculatorError) as caught:
         atoms.get_potential_energy()
     assert "no pseudopotential for Si" in str(caught.value)
@@ -424,7 +424,7 @@ def test_siesta_missing_pseudopotential(tmp_path):
 # Staging, post-processing and the registry
 # --------------------------------------------------------------------------
 def test_inputs_can_be_staged_without_running(tmp_path):
-    calc = fa.Espresso(pseudopotentials={"Si": "Si.upf"}, command="false")
+    calc = fa.QuantumEspresso(pseudopotentials={"Si": "Si.upf"}, command="false")
     calc.write_inputs(silicon(), str(tmp_path))
     assert (tmp_path / "pw.in").is_file()
     assert calc.call_count == 0
@@ -432,7 +432,7 @@ def test_inputs_can_be_staged_without_running(tmp_path):
 
 def test_a_finished_run_can_be_parsed_afterwards(tmp_path):
     (tmp_path / "OUTCAR").write_text(OUTCAR)
-    calc = fa.Vasp()
+    calc = fa.VASP()
     calc.read_results(str(tmp_path))
     assert calc.results.energy == pytest.approx(-10.84012340)
     assert calc.call_count == 0
@@ -515,20 +515,20 @@ def test_full_yaml_to_energy_round_trip(tmp_path):
 
 
 def test_command_resolution_and_environment(tmp_path, monkeypatch):
-    assert fa.Vasp().command == "vasp_std"
-    assert fa.Vasp(command="mpirun -np 4 vasp_gam").command == "mpirun -np 4 vasp_gam"
+    assert fa.VASP().command == "vasp_std"
+    assert fa.VASP(command="mpirun -np 4 vasp_gam").command == "mpirun -np 4 vasp_gam"
 
     monkeypatch.setenv("VASP_COMMAND", "srun vasp_std")
-    assert fa.Vasp().command == "srun vasp_std"
+    assert fa.VASP().command == "srun vasp_std"
     # An explicit parameter still wins over the environment.
-    assert fa.Vasp(command="vasp_ncl").command == "vasp_ncl"
+    assert fa.VASP(command="vasp_ncl").command == "vasp_ncl"
 
 
 def test_child_environment_is_passed_through(tmp_path):
     script = tmp_path / "stub.sh"
     script.write_text('#!/bin/sh\necho "PP=$MY_PSEUDO_DIR" > OUTCAR\n')
 
-    calc = fa.Vasp(
+    calc = fa.VASP(
         directory=str(tmp_path),
         command="sh stub.sh",
         write_potcar=False,

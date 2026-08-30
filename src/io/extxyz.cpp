@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "fastatoms/io/extxyz.hpp"
 
+#include "fastatoms/calculators/calculator.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -1095,6 +1097,32 @@ void append_extxyz_frame(std::string& out, const Atoms& atoms, const ExtxyzOptio
         }
         merged.emplace_back(key, value);
     };
+    // What the calculator worked out goes in first, so anything the structure
+    // or the caller says about the same key overrides it. Forces already
+    // travel as a column because they are per-atom; the scalars live on the
+    // calculator, and without this a written frame silently loses the energy
+    // it was computed with - turning a trajectory of results into a trajectory
+    // of geometries.
+    if (options.results && atoms.has_calculator()) {
+        const Results& results = atoms.calculator()->results();
+        if (results.energy) {
+            put("energy", Value(*results.energy));
+        }
+        if (results.free_energy &&
+            (!results.energy || *results.free_energy != *results.energy)) {
+            put("free_energy", Value(*results.free_energy));
+        }
+        if (results.stress) {
+            // Nine numbers, row-major, which is the shape every other reader
+            // of this format expects a stress in.
+            const Mat3 matrix = voigt_to_matrix(*results.stress);
+            Value::List flat;
+            for (std::size_t k = 0; k < 9; ++k) {
+                flat.push_back(Value(matrix.m[k]));
+            }
+            put("stress", Value(std::move(flat)));
+        }
+    }
     if (atoms.info().is_map()) {
         for (const auto& [key, value] : atoms.info().as_map()) {
             put(key, value);

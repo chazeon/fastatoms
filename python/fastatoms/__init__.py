@@ -60,9 +60,9 @@ True
 For a DFT run, swap in one of the file-based calculators - the rest of the
 script is unchanged::
 
-    atoms.calc = fa.Vasp(xc="pbe", encut=400, kpts=[4, 4, 4], directory="run")
-    atoms.calc = fa.Espresso(pseudopotentials={"Si": "Si.upf"}, ecutwfc=40.0)
-    atoms.calc = fa.Siesta(xc="pbe", mesh_cutoff=250.0)
+    atoms.calc = fa.VASP(xc="pbe", encut=400, kpts=[4, 4, 4], directory="run")
+    atoms.calc = fa.QuantumEspresso(pseudopotentials={"Si": "Si.upf"}, ecutwfc=40.0)
+    atoms.calc = fa.SIESTA(xc="pbe", mesh_cutoff=250.0)
 
 Relaxing a structure
 --------------------
@@ -159,6 +159,9 @@ from ._core import (
     Atoms,
     Calculator,
     CalculatorError,
+    ExtxyzError,
+    MLIPError,
+    PropertyNotImplementedError,
     CalculatorParameters,
     BandParameters,
     AdsorptionError,
@@ -193,7 +196,6 @@ from ._core import (
     DynamicsResult,
     DynamicsStep,
     DynamicsStopReason,
-    Espresso,
     EnergyBreakdown,
     Euler,
     Ewald,
@@ -240,8 +242,9 @@ from ._core import (
     QuantumEspresso,
     Results,
     SD,
+    SIESTA,
     SimulationParameters,
-    Siesta,
+    SinglePointCalculator,
     SteepestDescent,
     StopReason,
     SupercellMap,
@@ -251,7 +254,7 @@ from ._core import (
     Topology,
     Thermostat,
     TrajectoryWriter,
-    Vasp,
+    VASP,
     VelocityVerlet,
     WaterModel,
     __version__,
@@ -271,6 +274,7 @@ from ._core import (
     idpp_interpolate,
     make_autoneb,
     make_band,
+    attach_stored_results,
     make_calculator,
     make_dynamics,
     make_integrator,
@@ -352,6 +356,9 @@ __all__ = [
     "Atoms",
     "Calculator",
     "CalculatorError",
+    "ExtxyzError",
+    "MLIPError",
+    "PropertyNotImplementedError",
     "CalculatorParameters",
     "BandParameters",
     "AdsorptionError",
@@ -363,7 +370,6 @@ __all__ = [
     "BandProfile",
     "CHGNet",
     "Cell",
-    "Espresso",
     "FileIOCalculator",
     "FixAtoms",
     "FixLine",
@@ -420,8 +426,9 @@ __all__ = [
     "Property",
     "QuantumEspresso",
     "Results",
+    "SIESTA",
     "SimulationParameters",
-    "Siesta",
+    "SinglePointCalculator",
     "SteepestDescent",
     "StopReason",
     "SupercellMap",
@@ -432,8 +439,8 @@ __all__ = [
     "WaterModel",
     "Thermostat",
     "TrajectoryWriter",
+    "VASP",
     "VelocityVerlet",
-    "Vasp",
     "__version__",
     "atomic_mass",
     "atoms_from_dict",
@@ -452,6 +459,7 @@ __all__ = [
     "idpp_interpolate",
     "make_autoneb",
     "make_band",
+    "attach_stored_results",
     "make_calculator",
     "make_dynamics",
     "make_integrator",

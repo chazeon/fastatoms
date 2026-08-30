@@ -5,7 +5,7 @@
     python python/examples/relaxation.py examples/relax_argon.yaml
 
 Everything here runs on the built-in Lennard-Jones calculator, so no DFT
-installation is needed. Swapping in ``fa.Vasp(...)`` changes nothing else.
+installation is needed. Swapping in ``fa.VASP(...)`` changes nothing else.
 """
 
 from __future__ import annotations

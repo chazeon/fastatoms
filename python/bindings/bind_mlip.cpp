@@ -156,7 +156,7 @@ The convention is the one MACE, MatterSim, CHGNet and NequIP share::
     // ---------------------------------------------------------------------
     // The calculator
     // ---------------------------------------------------------------------
-    py::class_<MLIPCalculator, Calculator, std::shared_ptr<MLIPCalculator>> mlip(
+    py::class_<MLIPCalculator, Calculator, py::smart_holder> mlip(
         m, "MLIP", R"doc(
 A calculator backed by a machine-learning interatomic potential.
 
@@ -223,7 +223,7 @@ the species. Passing ``None`` restores the normal behaviour.
     // ---------------------------------------------------------------------
     // The families
     // ---------------------------------------------------------------------
-    py::class_<MACECalculator, MLIPCalculator, std::shared_ptr<MACECalculator>>(m, "MACE",
+    py::class_<MACECalculator, MLIPCalculator, py::smart_holder>(m, "MACE",
                                                                                  R"doc(
 MACE: equivariant message passing, and the one family that exports cleanly to
 TorchScript - so it is the one that can run entirely in C++.
@@ -242,7 +242,7 @@ cache before being passed on, so a run stays offline when the file is there.
             return std::make_shared<MACECalculator>(from_kwargs(kwargs));
         }));
 
-    py::class_<MatterSimCalculator, MLIPCalculator, std::shared_ptr<MatterSimCalculator>>(
+    py::class_<MatterSimCalculator, MLIPCalculator, py::smart_holder>(
         m, "MatterSim", R"doc(
 MatterSim, Microsoft's M3GNet-based universal potential.
 
@@ -258,7 +258,7 @@ costs a pipe round trip rather than an interpreter start.
             return std::make_shared<MatterSimCalculator>(from_kwargs(kwargs));
         }));
 
-    py::class_<CHGNetCalculator, MLIPCalculator, std::shared_ptr<CHGNetCalculator>>(
+    py::class_<CHGNetCalculator, MLIPCalculator, py::smart_holder>(
         m, "CHGNet", R"doc(
 CHGNet, the charge-informed universal potential. Driven through the worker.
 
@@ -268,7 +268,7 @@ CHGNet, the charge-informed universal potential. Driven through the worker.
             return std::make_shared<CHGNetCalculator>(from_kwargs(kwargs));
         }));
 
-    py::class_<NequIPCalculator, MLIPCalculator, std::shared_ptr<NequIPCalculator>>(
+    py::class_<NequIPCalculator, MLIPCalculator, py::smart_holder>(
         m, "NequIP", R"doc(
 NequIP, and Allegro which deploys through the same package.
 

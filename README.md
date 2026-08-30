@@ -154,7 +154,7 @@ space group Fm-3m
 
 The cell relaxation finds the equilibrium lattice constant, and the symmetry
 survives it. The same three lines work with a machine-learning potential
-(`atoms.calc = fa.MACE()`) or a DFT code (`atoms.calc = fa.Vasp(xc="pbe")`)
+(`atoms.calc = fa.MACE()`) or a DFT code (`atoms.calc = fa.VASP(xc="pbe")`)
 without anything else changing.
 
 More, in [`python/examples/`](python/examples/):
@@ -399,7 +399,7 @@ A calculator evaluates energies, forces and stresses for an `Atoms` object.
 Attach one and the structure can answer for itself:
 
 ```python
-atoms.calc = fa.Vasp(xc="pbe", encut=400, kpts=[4, 4, 4], directory="run")
+atoms.calc = fa.VASP(xc="pbe", encut=400, kpts=[4, 4, 4], directory="run")
 
 energy = atoms.get_potential_energy()   # eV
 forces = atoms.get_forces()             # eV/A, shape (N, 3)
@@ -414,22 +414,22 @@ the per-atom array `forces`, so they follow it through slicing and writing.
 
 | | writes | runs | reads |
 | --- | --- | --- | --- |
-| `fa.Vasp` | POSCAR, INCAR, KPOINTS, POTCAR | `$VASP_COMMAND`, else `vasp_std` | OUTCAR |
-| `fa.Espresso` | pw.in | `$ASE_ESPRESSO_COMMAND`, else `pw.x -in pw.in > pw.out` | pw.out |
-| `fa.Siesta` | *label*.fdf, pseudopotentials | `$SIESTA_COMMAND`, else `siesta < siesta.fdf > siesta.out` | *label*.out, *label*.FORCE_STRESS |
+| `fa.VASP` | POSCAR, INCAR, KPOINTS, POTCAR | `$VASP_COMMAND`, else `vasp_std` | OUTCAR |
+| `fa.QuantumEspresso` | pw.in | `$ASE_ESPRESSO_COMMAND`, else `pw.x -in pw.in > pw.out` | pw.out |
+| `fa.SIESTA` | *label*.fdf, pseudopotentials | `$SIESTA_COMMAND`, else `siesta < siesta.fdf > siesta.out` | *label*.out, *label*.FORCE_STRESS |
 
 Each takes the settings its own code expects, and anything FastAtoms does not
 interpret is passed straight through to the right place:
 
 ```python
 # encut, ismear, sigma... become INCAR tags
-fa.Vasp(xc="pbe", encut=400, ismear=0, sigma=0.05, kpts=[4, 4, 4])
+fa.VASP(xc="pbe", encut=400, ismear=0, sigma=0.05, kpts=[4, 4, 4])
 
 # each keyword is routed to the namelist that owns it
-fa.Espresso(pseudopotentials={"Si": "Si.upf"}, ecutwfc=40.0, conv_thr=1e-8)
+fa.QuantumEspresso(pseudopotentials={"Si": "Si.upf"}, ecutwfc=40.0, conv_thr=1e-8)
 
 # underscores become dots: dm_tolerance -> dm.tolerance
-fa.Siesta(xc="pbe", mesh_cutoff=250.0, dm_tolerance=1e-4, kpts=[4, 4, 4])
+fa.SIESTA(xc="pbe", mesh_cutoff=250.0, dm_tolerance=1e-4, kpts=[4, 4, 4])
 ```
 
 `fa.LennardJones` is a built-in analytic calculator that needs no external
@@ -464,7 +464,7 @@ changes. `fa.register_calculator(name, factory)` adds your own.
 The two halves work separately, which is what an HPC workflow usually needs:
 
 ```python
-calc = fa.Vasp(xc="pbe", encut=400)
+calc = fa.VASP(xc="pbe", encut=400)
 calc.write_inputs(atoms, "job-01")     # stage a directory, run nothing
 ...                                    # submit job-01 to a queue
 calc.read_results("job-01")            # parse it afterwards
@@ -484,7 +484,7 @@ ZX` for VASP, Ry/bohr³ with the opposite sign for Quantum ESPRESSO, Ry/bohr³
 for SIESTA's `.FORCE_STRESS`. `results.extra` carries what is left over: Fermi
 level, iteration counts, convergence flags.
 
-Because VASP requires atoms grouped by species, `fa.Vasp` reorders them in the
+Because VASP requires atoms grouped by species, `fa.VASP` reorders them in the
 POSCAR and permutes the forces back, so what you read matches the order you
 gave.
 
@@ -1115,7 +1115,7 @@ Five algorithms, all written from scratch — no external linear algebra or
 optimization library is used anywhere in the module.
 
 ```python
-atoms.calc = fa.Vasp(xc="pbe", encut=400, kpts=[4, 4, 4])
+atoms.calc = fa.VASP(xc="pbe", encut=400, kpts=[4, 4, 4])
 
 result = fa.LBFGS(fmax=0.02).run(atoms)      # relaxes atoms in place
 print(result.converged, result.steps, result.evaluations, result.energy)

@@ -37,6 +37,14 @@ it re-exports everything here alongside a few pure-Python conveniences.
 
     static auto* const calculator_error =
         new py::exception<fastatoms::CalculatorError>(m, "CalculatorError", PyExc_RuntimeError);
+    // Derived from CalculatorError on both sides, so `except CalculatorError`
+    // still catches them and code that wants to tell them apart can.
+    static auto* const property_error = new py::exception<fastatoms::PropertyNotImplementedError>(
+        m, "PropertyNotImplementedError", calculator_error->ptr());
+    static auto* const mlip_error = new py::exception<fastatoms::mlip::MLIPError>(
+        m, "MLIPError", calculator_error->ptr());
+    static auto* const extxyz_error =
+        new py::exception<fastatoms::io::ExtxyzError>(m, "ExtxyzError", PyExc_ValueError);
     static auto* const optimizer_error = new py::exception<fastatoms::optimize::OptimizerError>(
         m, "OptimizerError", PyExc_RuntimeError);
     static auto* const dynamics_error = new py::exception<fastatoms::md::DynamicsError>(
@@ -67,8 +75,14 @@ it re-exports everything here alongside a few pure-Python conveniences.
             if (p) {
                 std::rethrow_exception(p);
             }
+        } catch (const fastatoms::mlip::MLIPError& e) {
+            py::set_error(*mlip_error, e.what());
+        } catch (const fastatoms::PropertyNotImplementedError& e) {
+            py::set_error(*property_error, e.what());
         } catch (const fastatoms::CalculatorError& e) {
             py::set_error(*calculator_error, e.what());
+        } catch (const fastatoms::io::ExtxyzError& e) {
+            py::set_error(*extxyz_error, e.what());
         } catch (const fastatoms::optimize::OptimizerError& e) {
             py::set_error(*optimizer_error, e.what());
         } catch (const fastatoms::md::DynamicsError& e) {

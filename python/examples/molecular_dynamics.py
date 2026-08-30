@@ -5,7 +5,7 @@
     python python/examples/molecular_dynamics.py examples/md_argon.yaml
 
 Everything runs on the built-in Lennard-Jones calculator, so no DFT
-installation is needed. Swapping in ``fa.Vasp(...)`` changes nothing else.
+installation is needed. Swapping in ``fa.VASP(...)`` changes nothing else.
 """
 
 from __future__ import annotations

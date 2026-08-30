@@ -20,6 +20,7 @@
 #include "fastatoms/symmetry/spacegroup.hpp"
 #include "fastatoms/symmetry/standardize.hpp"
 #include "fastatoms/calculators/calculator.hpp"
+#include "fastatoms/calculators/single_point.hpp"
 #include "fastatoms/calculators/file_io_calculator.hpp"
 #include "fastatoms/calculators/lennard_jones.hpp"
 #include "fastatoms/calculators/mlip.hpp"

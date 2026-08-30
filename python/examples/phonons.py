@@ -5,7 +5,7 @@
     python python/examples/phonons.py examples/phonons_argon.yaml
 
 Everything here runs on the built-in Lennard-Jones calculator, so no DFT
-installation is needed. Swapping in ``fa.Vasp(...)`` changes nothing else: the
+installation is needed. Swapping in ``fa.VASP(...)`` changes nothing else: the
 module only ever asks a calculator for the forces on a displaced supercell.
 """
 

@@ -168,7 +168,9 @@ bool Calculator::needs_calculation(const Atoms& atoms,
 void Calculator::calculate(Atoms& atoms, const std::vector<Property>& properties) {
     for (const Property property : properties) {
         if (!implements(property)) {
-            fail("does not implement the property '" + std::string(property_name(property)) + "'");
+            throw PropertyNotImplementedError(
+                name() + ": does not implement the property '" +
+                std::string(property_name(property)) + "'");
         }
     }
     if (!needs_calculation(atoms, properties)) {
@@ -188,8 +190,20 @@ void Calculator::calculate(Atoms& atoms, const std::vector<Property>& properties
 
     for (const Property property : properties) {
         if (!results_.has(property)) {
-            fail("the calculation finished but produced no '" +
-                 std::string(property_name(property)) + "'");
+            // Not a failure: the calculation was fine, this model simply does
+            // not have that quantity. A pair potential asked for a magnetic
+            // moment, or any calculator asked for a stress on a structure with
+            // no cell, is a question with no answer.
+            throw PropertyNotImplementedError(
+                name() + ": no '" + std::string(property_name(property)) +
+                "'; this calculator produces " + [&] {
+                    std::string listing;
+                    for (const Property offered : implemented_properties()) {
+                        listing += (listing.empty() ? "" : ", ");
+                        listing += property_name(offered);
+                    }
+                    return listing.empty() ? std::string("nothing") : listing;
+                }());
         }
     }
 }

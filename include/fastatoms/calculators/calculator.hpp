@@ -68,6 +68,14 @@ public:
 
     [[nodiscard]] const Results& results() const noexcept { return results_; }
 
+    /// Replace the cached results outright.
+    ///
+    /// For a calculator that works out its answer somewhere else - a Python
+    /// subclass filling `self.results`, a set of numbers read from a file -
+    /// and for tests that need a known state. The cache key is not touched, so
+    /// the next request for a structure that has moved still recomputes.
+    void set_results(Results results) { results_ = std::move(results); }
+
     /// Number of times the underlying engine has actually been invoked.
     [[nodiscard]] std::size_t call_count() const noexcept { return call_count_; }
 

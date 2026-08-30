@@ -294,7 +294,7 @@ reciprocal space; the total does not depend on where the split is made.
         .def_property_readonly("total", &EnergyBreakdown::total)
         .def("__repr__", &EnergyBreakdown::to_string);
 
-    py::class_<ForcefieldCalculator, Calculator, std::shared_ptr<ForcefieldCalculator>>(
+    py::class_<ForcefieldCalculator, Calculator, py::smart_holder>(
         m, "Forcefield", R"doc(
 A classical empirical force field: Lennard-Jones plus Ewald electrostatics.
 

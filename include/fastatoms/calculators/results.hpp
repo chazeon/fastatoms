@@ -31,6 +31,18 @@ public:
     explicit CalculatorError(const std::string& message) : std::runtime_error(message) {}
 };
 
+/// Raised when a calculator is asked for something it does not produce.
+///
+/// Separate from `CalculatorError` because it means something different: the
+/// calculation was fine, the quantity simply is not one this model has. Asking
+/// a pair potential for a magnetic moment, or any calculator for a stress on a
+/// structure with no cell, is a question with no answer rather than a failure.
+class PropertyNotImplementedError : public CalculatorError {
+public:
+    explicit PropertyNotImplementedError(const std::string& message)
+        : CalculatorError(message) {}
+};
+
 /// The outcome of one calculation.
 ///
 /// Units follow ASE throughout:

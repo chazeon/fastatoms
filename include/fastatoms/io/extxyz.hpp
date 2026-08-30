@@ -99,6 +99,15 @@ struct ExtxyzOptions {
     bool velocities{true};
     /// Write the "forces" array as `forces:R:3` when it is there.
     bool forces{true};
+    /// Record the attached calculator's energy, free energy and stress in the
+    /// comment line.
+    ///
+    /// Forces already travel as a column because they are per-atom, but the
+    /// scalars live on the calculator rather than on the structure, so without
+    /// this a written frame silently loses the energy it was computed with -
+    /// and a trajectory of results becomes a trajectory of geometries.
+    bool results{true};
+
     /// Write masses and charges when they are set.
     bool masses{false};
     bool charges{false};

@@ -26,7 +26,7 @@ def show_generated_inputs(atoms: fa.Atoms) -> None:
     print("Input generation (no DFT installation required)")
     print("=" * 70)
 
-    vasp = fa.Vasp(xc="pbe", encut=400, kpts=[8, 8, 8], ismear=0, sigma=0.05)
+    vasp = fa.VASP(xc="pbe", encut=400, kpts=[8, 8, 8], ismear=0, sigma=0.05)
     print("\n--- INCAR " + "-" * 59)
     print(vasp.incar_string(), end="")
     print("--- KPOINTS " + "-" * 57)
@@ -34,7 +34,7 @@ def show_generated_inputs(atoms: fa.Atoms) -> None:
     print("--- POSCAR (first 8 lines) " + "-" * 42)
     print("\n".join(vasp.poscar_string(atoms).splitlines()[:8]))
 
-    espresso = fa.Espresso(
+    espresso = fa.QuantumEspresso(
         pseudopotentials={"Si": "Si.pbe-n-kjpaw_psl.1.0.0.UPF"},
         ecutwfc=40.0,
         conv_thr=1e-8,
@@ -44,7 +44,7 @@ def show_generated_inputs(atoms: fa.Atoms) -> None:
     deck = espresso.input_string(atoms)
     print("\n".join(deck.splitlines()[: deck.splitlines().index("ATOMIC_SPECIES")]))
 
-    siesta = fa.Siesta(xc="pbe", mesh_cutoff=300.0, kpts=[8, 8, 8], dm_tolerance=1e-4)
+    siesta = fa.SIESTA(xc="pbe", mesh_cutoff=300.0, kpts=[8, 8, 8], dm_tolerance=1e-4)
     print("--- siesta.fdf (first 12 lines) " + "-" * 37)
     print("\n".join(siesta.fdf_string(atoms).splitlines()[:12]))
 
@@ -52,7 +52,7 @@ def show_generated_inputs(atoms: fa.Atoms) -> None:
 def equation_of_state(atoms: fa.Atoms, calculator) -> None:
     """Energy against volume - the same loop for any calculator.
 
-    Swap ``calculator`` for ``fa.Vasp(...)`` and nothing else changes; the DFT
+    Swap ``calculator`` for ``fa.VASP(...)`` and nothing else changes; the DFT
     run just takes rather longer than the analytic potential used here.
     """
     print("\n" + "=" * 70)

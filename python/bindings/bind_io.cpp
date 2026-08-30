@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "bindings.hpp"
 
+#include <optional>
+
+#include "fastatoms/calculators/single_point.hpp"
+
 namespace fastatoms::bindings {
 
 py::class_<io::InputDeck> bind_io(py::module_& m) {
@@ -136,13 +140,61 @@ py::class_<io::InputDeck> bind_io(py::module_& m) {
     // -----------------------------------------------------------------
     m.def(
         "read",
-        [](const std::string& path, std::ptrdiff_t index) { return io::read(path, index); },
-        py::arg("path"), py::arg("index") = -1,
+        [](const std::string& path, const py::object& index, bool results) -> py::object {
+            const auto attach = [results](Atoms& atoms) {
+                if (results) {
+                    attach_stored_results(atoms);
+                }
+            };
+
+            // A slice - `index=":"` or `index=slice(None)` - asks for frames
+            // rather than a frame, and gets a list back. One index gets one
+            // structure, which is what the common case wants unwrapped.
+            std::optional<py::slice> slice;
+            if (py::isinstance<py::slice>(index)) {
+                slice = index.cast<py::slice>();
+            } else if (py::isinstance<py::str>(index)) {
+                const std::string text = index.cast<std::string>();
+                if (text.find(':') == std::string::npos) {
+                    throw py::value_error("read(): index='" + text +
+                                          "' is not a slice; write ':' for every frame, "
+                                          "'-10:' for the last ten, or pass a number");
+                }
+                slice = py::module_::import("builtins")
+                            .attr("eval")(py::str("__import__('numpy').s_[" + text + "]"))
+                            .cast<py::slice>();
+            }
+
+            if (slice) {
+                std::vector<Atoms> frames = io::read_frames(path);
+                std::size_t start = 0;
+                std::size_t stop = 0;
+                std::size_t step = 0;
+                std::size_t length = 0;
+                if (!slice->compute(frames.size(), &start, &stop, &step, &length)) {
+                    throw py::error_already_set();
+                }
+                py::list out;
+                for (std::size_t k = 0; k < length; ++k) {
+                    Atoms& frame = frames[start + k * step];
+                    attach(frame);
+                    out.append(frame);
+                }
+                return out;
+            }
+
+            Atoms atoms = io::read(path, index.cast<std::ptrdiff_t>());
+            attach(atoms);
+            return py::cast(std::move(atoms));
+        },
+        py::arg("path"), py::arg("index") = -1, py::kw_only(), py::arg("results") = true,
         R"doc(
 Read a structure.
 
-    atoms = fa.read("relaxed.extxyz")        # the last frame
-    first = fa.read("md.extxyz", index=0)    # the first
+    atoms  = fa.read("relaxed.extxyz")        # the last frame
+    first  = fa.read("md.extxyz", index=0)    # the first
+    every  = fa.read("md.extxyz", index=":")  # a list of all of them
+    last10 = fa.read("md.extxyz", index="-10:")
 
 Extended XYZ unless the extension says YAML, and a negative index counts from
 the end - so the default is the final frame of a trajectory, which is the
@@ -150,10 +202,27 @@ relaxed geometry or the last configuration of a run.
 
 To load an input file describing a *run*, rather than a structure, use
 :func:`read_input`: extended XYZ has nowhere to say which calculator to attach.
+
+A frame carrying an energy, forces or a stress comes back with a
+:class:`SinglePointCalculator` holding them, so ``atoms.get_potential_energy()``
+returns what the file recorded rather than raising. Pass ``results=False`` to
+get the bare structure.
 )doc");
 
-    m.def("read_frames", &io::read_frames, py::arg("path"),
-          "Every frame of a trajectory, as a list of :class:`Atoms`.");
+    m.def(
+        "read_frames",
+        [](const std::string& path, bool results) {
+            std::vector<Atoms> frames = io::read_frames(path);
+            if (results) {
+                for (Atoms& frame : frames) {
+                    attach_stored_results(frame);
+                }
+            }
+            return frames;
+        },
+        py::arg("path"), py::kw_only(), py::arg("results") = true,
+        "Every frame of a trajectory, as a list of :class:`Atoms`, each carrying "
+        "whatever results the file recorded.");
 
     m.def(
         "read_input", [](const std::string& path) { return io::read_yaml_file(path); },
