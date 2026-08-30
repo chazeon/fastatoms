@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(FastAtoms
-    VERSION 0.1.1
+    VERSION 0.1.2
     DESCRIPTION "High-performance C++ core for atomistic simulations, driven from Python"
     LANGUAGES CXX)
 
@@ -43,6 +43,15 @@ option(FASTATOMS_ENABLE_LTO     "Enable link-time optimisation in optimised buil
 option(FASTATOMS_ENABLE_WERROR  "Treat compiler warnings as errors" OFF)
 option(FASTATOMS_SHARED_CORE    "Build the core as a shared library" OFF)
 option(FASTATOMS_INSTALL        "Generate install rules for the C++ library" ON)
+option(FASTATOMS_WITH_TORCH     "Evaluate machine-learning potentials in process with LibTorch" OFF)
+
+# LibTorch ships inside the `torch` wheel, so the easiest way to find it is to
+# ask an interpreter that has torch installed where its CMake files live:
+#
+#   cmake -S . -B build -DFASTATOMS_WITH_TORCH=ON \
+#         -DFASTATOMS_TORCH_PYTHON=$HOME/miniconda3/envs/mace_env/bin/python
+set(FASTATOMS_TORCH_PYTHON "" CACHE STRING
+    "Interpreter whose torch installation supplies LibTorch")
 
 include(cmake/FastAtomsDependencies.cmake)
 
@@ -60,10 +69,41 @@ set(FASTATOMS_CORE_SOURCES
     src/calculators/calculator.cpp
     src/calculators/file_io_calculator.cpp
     src/calculators/lennard_jones.cpp
+    src/calculators/mlip.cpp
+    src/calculators/mlip_models.cpp
+    src/calculators/mlip_torch.cpp
+    src/calculators/mlip_worker.cpp
     src/calculators/quantum_espresso.cpp
     src/calculators/registry.cpp
     src/calculators/siesta.cpp
     src/calculators/vasp.cpp
+    src/md/barostat.cpp
+    src/md/constraints.cpp
+    src/md/dynamics.cpp
+    src/md/integrator.cpp
+    src/md/registry.cpp
+    src/md/thermostat.cpp
+    src/md/trajectory.cpp
+    src/md/types.cpp
+    src/md/velocity.cpp
+    src/forcefield/ewald.cpp
+    src/forcefield/forcefield.cpp
+    src/forcefield/topology.cpp
+    src/forcefield/water.cpp
+    src/phonon/eigen.cpp
+    src/phonon/force_constants.cpp
+    src/phonon/phonons.cpp
+    src/phonon/registry.cpp
+    src/phonon/supercell.cpp
+    src/phonon/symmetry.cpp
+    src/optimize/bfgs.cpp
+    src/optimize/conjugate_gradient.cpp
+    src/optimize/lbfgs.cpp
+    src/optimize/line_search.cpp
+    src/optimize/optimizer.cpp
+    src/optimize/registry.cpp
+    src/optimize/steepest_descent.cpp
+    src/optimize/variables.cpp
     src/util/process.cpp
     src/util/text.cpp
     src/version.cpp)
@@ -72,6 +112,7 @@ set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/fastatoms.hpp
     include/fastatoms/core/atoms.hpp
     include/fastatoms/core/cell.hpp
+    include/fastatoms/core/constraint.hpp
     include/fastatoms/core/elements.hpp
     include/fastatoms/core/neighbor_list.hpp
     include/fastatoms/core/units.hpp
@@ -81,11 +122,44 @@ set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/calculators/calculator.hpp
     include/fastatoms/calculators/file_io_calculator.hpp
     include/fastatoms/calculators/lennard_jones.hpp
+    include/fastatoms/calculators/mlip.hpp
+    include/fastatoms/calculators/mlip_models.hpp
+    include/fastatoms/calculators/mlip_torch.hpp
+    include/fastatoms/calculators/mlip_worker.hpp
     include/fastatoms/calculators/quantum_espresso.hpp
     include/fastatoms/calculators/registry.hpp
     include/fastatoms/calculators/results.hpp
     include/fastatoms/calculators/siesta.hpp
     include/fastatoms/calculators/vasp.hpp
+    include/fastatoms/md/barostat.hpp
+    include/fastatoms/md/constraints.hpp
+    include/fastatoms/md/dynamics.hpp
+    include/fastatoms/md/integrator.hpp
+    include/fastatoms/md/registry.hpp
+    include/fastatoms/md/thermostat.hpp
+    include/fastatoms/md/trajectory.hpp
+    include/fastatoms/md/types.hpp
+    include/fastatoms/md/velocity.hpp
+    include/fastatoms/forcefield/ewald.hpp
+    include/fastatoms/forcefield/forcefield.hpp
+    include/fastatoms/forcefield/topology.hpp
+    include/fastatoms/forcefield/water.hpp
+    include/fastatoms/phonon/eigen.hpp
+    include/fastatoms/phonon/force_constants.hpp
+    include/fastatoms/phonon/phonons.hpp
+    include/fastatoms/phonon/registry.hpp
+    include/fastatoms/phonon/supercell.hpp
+    include/fastatoms/phonon/symmetry.hpp
+    include/fastatoms/optimize/bfgs.hpp
+    include/fastatoms/optimize/conjugate_gradient.hpp
+    include/fastatoms/optimize/lbfgs.hpp
+    include/fastatoms/optimize/line_search.hpp
+    include/fastatoms/optimize/optimizer.hpp
+    include/fastatoms/optimize/registry.hpp
+    include/fastatoms/optimize/steepest_descent.hpp
+    include/fastatoms/optimize/types.hpp
+    include/fastatoms/optimize/variables.hpp
+    include/fastatoms/optimize/vector_math.hpp
     include/fastatoms/util/process.hpp
     include/fastatoms/util/text.hpp)
 
@@ -108,6 +182,75 @@ target_compile_definitions(fastatoms_core
 # dependency, because a consumer has to supply yaml-cpp's objects at link time.
 # FastAtomsConfig.cmake resolves it again with find_dependency().
 target_link_libraries(fastatoms_core PRIVATE ${FASTATOMS_YAML_CPP_TARGET})
+
+# ---------------------------------------------------------------------------
+# LibTorch, for running machine-learning potentials without an interpreter
+# ---------------------------------------------------------------------------
+set(FASTATOMS_TORCH_ORIGIN "disabled")
+if(FASTATOMS_WITH_TORCH)
+    if(FASTATOMS_TORCH_PYTHON)
+        execute_process(
+            COMMAND "${FASTATOMS_TORCH_PYTHON}" -c
+                    "import torch, sys; sys.stdout.write(torch.utils.cmake_prefix_path)"
+            OUTPUT_VARIABLE FASTATOMS_TORCH_CMAKE_PATH
+            ERROR_VARIABLE FASTATOMS_TORCH_PROBE_ERROR
+            RESULT_VARIABLE FASTATOMS_TORCH_PROBE_STATUS)
+        if(NOT FASTATOMS_TORCH_PROBE_STATUS EQUAL 0)
+            message(FATAL_ERROR
+                "FASTATOMS_TORCH_PYTHON=${FASTATOMS_TORCH_PYTHON} cannot import torch:\n"
+                "${FASTATOMS_TORCH_PROBE_ERROR}")
+        endif()
+        list(PREPEND CMAKE_PREFIX_PATH "${FASTATOMS_TORCH_CMAKE_PATH}")
+    endif()
+
+    find_package(Torch REQUIRED)
+    target_link_libraries(fastatoms_core PRIVATE ${TORCH_LIBRARIES})
+    target_compile_definitions(fastatoms_core PRIVATE FASTATOMS_WITH_TORCH=1)
+    if(Torch_VERSION)
+        set(FASTATOMS_TORCH_ORIGIN "${Torch_VERSION}")
+    elseif(TORCH_VERSION)
+        set(FASTATOMS_TORCH_ORIGIN "${TORCH_VERSION}")
+    else()
+        set(FASTATOMS_TORCH_ORIGIN "found")
+    endif()
+
+    # LibTorch's headers trip -Wshadow and friends, and they are not ours to
+    # fix, so they come in as system headers.
+    get_target_property(FASTATOMS_TORCH_INCLUDES torch INTERFACE_INCLUDE_DIRECTORIES)
+    if(FASTATOMS_TORCH_INCLUDES)
+        target_include_directories(fastatoms_core SYSTEM PRIVATE ${FASTATOMS_TORCH_INCLUDES})
+    endif()
+
+    # LibTorch loads its own OpenMP runtime (libtorch_cpu depends on
+    # @rpath/libomp.dylib). Linking a second one - the compiler's - aborts the
+    # process before main with
+    #
+    #   OMP: Error #15: Initializing libomp.dylib, but found libomp.dylib
+    #                   already initialized
+    #
+    # and the two cannot be merged: the copy torch ships records an absolute
+    # install name that only exists on the machine that built it, so linking
+    # that file directly produces a binary dyld cannot load. Rather than an
+    # unsupported KMP_DUPLICATE_LIB_OK, FastAtoms simply stops adding a second
+    # runtime and uses the one already in the process.
+    #
+    # The only thing that loses threads is the neighbour-list build, which is a
+    # rounding error next to a neural network evaluation. A build that wants
+    # both should leave FASTATOMS_WITH_TORCH off and use the worker backend.
+    if(FASTATOMS_OPENMP_FOUND)
+        set(FASTATOMS_OPENMP_FOUND OFF)
+        set(FASTATOMS_OPENMP_NOTE " (off: LibTorch supplies the OpenMP runtime)")
+        message(STATUS
+            "LibTorch supplies OpenMP; FastAtoms will not link a second runtime")
+    endif()
+endif()
+
+# Where the MLIP worker script lives, so a calculator can find it without the
+# caller having to say. The source tree comes first for a build tree that is
+# used in place, and the installed copy is the fallback.
+target_compile_definitions(fastatoms_core PRIVATE
+    FASTATOMS_MLIP_WORKER_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/python/fastatoms/mlip/worker.py"
+    FASTATOMS_MLIP_WORKER_INSTALLED="${CMAKE_INSTALL_FULL_DATADIR}/fastatoms/mlip/worker.py")
 
 set_target_properties(fastatoms_core PROPERTIES
     VERSION ${PROJECT_VERSION}
@@ -199,6 +342,11 @@ install(DIRECTORY include/fastatoms
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     FILES_MATCHING PATTERN "*.hpp")
 
+# The MLIP worker runs under a different interpreter from the one that imports
+# FastAtoms, so it is installed as data rather than only as part of the wheel.
+install(FILES python/fastatoms/mlip/worker.py
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/fastatoms/mlip)
+
 install(EXPORT FastAtomsTargets
     FILE FastAtomsTargets.cmake
     NAMESPACE FastAtoms::
@@ -227,9 +375,10 @@ if(FASTATOMS_IS_TOP_LEVEL)
     message(STATUS "FastAtoms ${PROJECT_VERSION}")
     message(STATUS "  build type ......... ${CMAKE_BUILD_TYPE}")
     message(STATUS "  compiler ........... ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
-    message(STATUS "  OpenMP ............. ${FASTATOMS_OPENMP_FOUND}")
+    message(STATUS "  OpenMP ............. ${FASTATOMS_OPENMP_FOUND}${FASTATOMS_OPENMP_NOTE}")
     message(STATUS "  python bindings .... ${FASTATOMS_BUILD_PYTHON}")
     message(STATUS "  tests .............. ${FASTATOMS_BUILD_TESTS}")
     message(STATUS "  yaml-cpp ........... ${FASTATOMS_YAML_CPP_ORIGIN}")
+    message(STATUS "  LibTorch (MLIP) .... ${FASTATOMS_TORCH_ORIGIN}")
     message(STATUS "")
 endif()

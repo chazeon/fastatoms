@@ -1,0 +1,56 @@
+# A machine-learning potential driving a relaxation, chosen from the input file.
+#
+#   python python/examples/mlip.py examples/mlip_water.yaml
+#   ./build/examples/fastatoms-run examples/mlip_water.yaml
+#
+# Unlike the other examples in this directory, this one needs a model. Either
+# export one first, which lets it run in C++ with no Python at all:
+#
+#   $HOME/miniconda3/envs/mace_env/bin/python -m fastatoms.mlip.export \
+#       ~/.cache/mace/MACE-OFF23_small.model -o mace-off23-small.pt
+#
+# or point `model` at a checkpoint and let the worker load it in `mace_env`.
+# Nothing else in the file changes: the calculator section is the only place a
+# neural potential differs from VASP or Lennard-Jones.
+
+structure:
+  # Two water molecules, deliberately off their equilibrium geometry.
+  cell: {a: 12.0, b: 12.0, c: 12.0}
+  pbc: true
+  atoms:
+    - {symbol: O, position: [0.00, 0.00, 0.00]}
+    - {symbol: H, position: [1.05, 0.00, 0.00]}
+    - {symbol: H, position: [-0.30, 1.02, 0.00]}
+    - {symbol: O, position: [4.00, 4.00, 4.00]}
+    - {symbol: H, position: [5.02, 4.00, 4.00]}
+    - {symbol: H, position: [3.70, 5.05, 4.00]}
+
+simulation:
+  task: optimize
+
+  calculator:
+    name: mace              # mace | mattersim | chgnet | nequip | allegro | mlip
+    parameters:
+      # An exported .pt archive runs in this process through LibTorch; a
+      # checkpoint or a short name ("small", "medium") goes to the worker.
+      model: mace-off23-small.pt
+      backend: auto         # auto | torchscript | worker
+      device: cpu           # cpu | cuda | mps
+      dtype: float64
+
+      # Only the worker uses these. `conda_env` defaults to mace_env for MACE
+      # and mlip_env for every other family.
+      # conda_env: mace_env
+      # python: /path/to/bin/python
+
+      # `cutoff` overrides what the model reports; `skin` adds to it.
+      # cutoff: 5.0
+      # skin: 0.0
+
+  optimizer:
+    algorithm: bfgs
+    fmax: 0.02              # eV/A
+    max_steps: 200
+
+  output:
+    log: water-mlip.log

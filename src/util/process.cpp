@@ -264,4 +264,238 @@ ProcessResult run_command(const std::string& command, const ProcessOptions& opti
     return result;
 }
 
+
+// ---------------------------------------------------------------------------
+// Subprocess: a child kept alive across many requests.
+// ---------------------------------------------------------------------------
+
+#if defined(_WIN32)
+
+Subprocess::Subprocess(std::string program, std::vector<std::string>, const ProcessOptions&)
+    : program_(std::move(program)) {
+    throw std::runtime_error("persistent subprocesses are not implemented on Windows");
+}
+
+Subprocess::~Subprocess() = default;
+void Subprocess::write_exact(const void*, std::size_t) {}
+void Subprocess::read_exact(void*, std::size_t) {}
+void Subprocess::close_input() {}
+int Subprocess::wait() { return -1; }
+void Subprocess::terminate() {}
+std::string Subprocess::error_tail(std::size_t) const { return {}; }
+
+#else
+
+Subprocess::Subprocess(std::string program, std::vector<std::string> args,
+                       const ProcessOptions& options)
+    : program_(std::move(program)) {
+    owns_log_ = options.log_path.empty();
+    log_path_ = owns_log_ ? make_temporary_log_path() : options.log_path;
+
+    // Everything the child needs is built before forking: between fork and
+    // exec only async-signal-safe calls are allowed, so no allocation.
+    std::vector<std::string> argv_storage;
+    argv_storage.push_back(program_);
+    argv_storage.insert(argv_storage.end(), args.begin(), args.end());
+    std::vector<char*> argv;
+    argv.reserve(argv_storage.size() + 1);
+    for (std::string& entry : argv_storage) {
+        argv.push_back(entry.data());
+    }
+    argv.push_back(nullptr);
+
+    std::vector<std::string> env_storage = build_environment(options.environment);
+    std::vector<char*> envp;
+    envp.reserve(env_storage.size() + 1);
+    for (std::string& entry : env_storage) {
+        envp.push_back(entry.data());
+    }
+    envp.push_back(nullptr);
+
+    const std::string log_string = log_path_.string();
+    const std::string working_directory = options.working_directory.string();
+
+    int in_pipe[2] = {-1, -1};
+    int out_pipe[2] = {-1, -1};
+    if (::pipe(in_pipe) != 0) {
+        throw std::system_error(errno, std::generic_category(), "pipe");
+    }
+    if (::pipe(out_pipe) != 0) {
+        const int saved = errno;
+        ::close(in_pipe[0]);
+        ::close(in_pipe[1]);
+        throw std::system_error(saved, std::generic_category(), "pipe");
+    }
+
+    const pid_t child = ::fork();
+    if (child < 0) {
+        const int saved = errno;
+        ::close(in_pipe[0]);
+        ::close(in_pipe[1]);
+        ::close(out_pipe[0]);
+        ::close(out_pipe[1]);
+        throw std::system_error(saved, std::generic_category(), "fork");
+    }
+
+    if (child == 0) {
+        // Child: wire the pipes onto stdin/stdout and stderr onto the log.
+        ::dup2(in_pipe[0], STDIN_FILENO);
+        ::dup2(out_pipe[1], STDOUT_FILENO);
+        ::close(in_pipe[0]);
+        ::close(in_pipe[1]);
+        ::close(out_pipe[0]);
+        ::close(out_pipe[1]);
+
+        const int log_fd = ::open(log_string.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (log_fd >= 0) {
+            ::dup2(log_fd, STDERR_FILENO);
+            ::close(log_fd);
+        }
+        if (!working_directory.empty() && ::chdir(working_directory.c_str()) != 0) {
+            ::_exit(127);
+        }
+        ::execve(argv[0], argv.data(), envp.data());
+        ::execvp(argv[0], argv.data());  // fall back to a PATH search
+        ::_exit(127);
+    }
+
+    ::close(in_pipe[0]);
+    ::close(out_pipe[1]);
+    pid_ = static_cast<int>(child);
+    to_child_ = in_pipe[1];
+    from_child_ = out_pipe[0];
+    running_ = true;
+}
+
+Subprocess::~Subprocess() {
+    if (running_) {
+        close_input();
+        terminate();
+    }
+    if (to_child_ >= 0) {
+        ::close(to_child_);
+    }
+    if (from_child_ >= 0) {
+        ::close(from_child_);
+    }
+    if (owns_log_ && !log_path_.empty()) {
+        std::error_code ignored;
+        std::filesystem::remove(log_path_, ignored);
+    }
+}
+
+void Subprocess::write_exact(const void* data, std::size_t bytes) {
+    if (to_child_ < 0) {
+        throw std::runtime_error(program_ + ": the input pipe is closed");
+    }
+    const char* cursor = static_cast<const char*>(data);
+    std::size_t remaining = bytes;
+    while (remaining > 0) {
+        const ssize_t written = ::write(to_child_, cursor, remaining);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            running_ = false;
+            throw std::runtime_error(program_ + ": writing to the worker failed (" +
+                                     std::strerror(errno) + ")");
+        }
+        cursor += written;
+        remaining -= static_cast<std::size_t>(written);
+    }
+}
+
+void Subprocess::read_exact(void* data, std::size_t bytes) {
+    if (from_child_ < 0) {
+        throw std::runtime_error(program_ + ": the output pipe is closed");
+    }
+    char* cursor = static_cast<char*>(data);
+    std::size_t remaining = bytes;
+    while (remaining > 0) {
+        const ssize_t got = ::read(from_child_, cursor, remaining);
+        if (got < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            running_ = false;
+            throw std::runtime_error(program_ + ": reading from the worker failed (" +
+                                     std::strerror(errno) + ")");
+        }
+        if (got == 0) {
+            running_ = false;
+            throw std::runtime_error(program_ + ": the worker exited unexpectedly");
+        }
+        cursor += got;
+        remaining -= static_cast<std::size_t>(got);
+    }
+}
+
+void Subprocess::close_input() {
+    if (to_child_ >= 0) {
+        ::close(to_child_);
+        to_child_ = -1;
+    }
+}
+
+int Subprocess::wait() {
+    if (reaped_) {
+        return status_;
+    }
+    if (pid_ < 0) {
+        return -1;
+    }
+    int status = 0;
+    while (::waitpid(pid_, &status, 0) < 0) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+    reaped_ = true;
+    running_ = false;
+    status_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return status_;
+}
+
+void Subprocess::terminate() {
+    if (pid_ < 0 || reaped_) {
+        return;
+    }
+    // Give the worker a moment to notice its closed input and leave on its own.
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        int status = 0;
+        const pid_t done = ::waitpid(pid_, &status, WNOHANG);
+        if (done == pid_) {
+            reaped_ = true;
+            running_ = false;
+            status_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            return;
+        }
+        sleep_briefly(0.01);
+    }
+    ::kill(pid_, SIGTERM);
+    for (int attempt = 0; attempt < 50; ++attempt) {
+        int status = 0;
+        const pid_t done = ::waitpid(pid_, &status, WNOHANG);
+        if (done == pid_) {
+            reaped_ = true;
+            running_ = false;
+            status_ = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            return;
+        }
+        sleep_briefly(0.01);
+    }
+    ::kill(pid_, SIGKILL);
+    wait();
+}
+
+std::string Subprocess::error_tail(std::size_t max_bytes) const {
+    std::string text = read_tail(log_path_);
+    if (text.size() > max_bytes) {
+        text = text.substr(text.size() - max_bytes);
+    }
+    return text;
+}
+
+#endif  // _WIN32
+
 }  // namespace fastatoms::util

@@ -1,0 +1,48 @@
+# Relaxing a strained argon crystal, positions and cell together.
+#
+#   python python/examples/relaxation.py examples/relax_argon.yaml
+#   ./build/examples/fastatoms-run examples/relax_argon.yaml
+#
+# The Lennard-Jones calculator needs no external program, so this input runs
+# as written. Point `calculator` at vasp, espresso or siesta and nothing else
+# in the file - or in the driving script - has to change.
+
+structure:
+  # 4% larger than the equilibrium lattice constant, with the atoms nudged off
+  # their sites, so there is something for the optimizer to do.
+  cell: {a: 5.50, b: 5.50, c: 5.50}
+  pbc: true
+  coordinates: fractional
+  atoms:
+    - {symbol: Ar, position: [0.02, 0.01, 0.00]}
+    - {symbol: Ar, position: [0.00, 0.52, 0.49]}
+    - {symbol: Ar, position: [0.49, 0.01, 0.50]}
+    - {symbol: Ar, position: [0.51, 0.50, 0.02]}
+
+simulation:
+  task: optimize
+
+  calculator:
+    name: lennard_jones
+    parameters:
+      epsilon: 0.0103        # eV
+      sigma: 3.40            # A
+      cutoff: 8.5            # A
+
+  optimizer:
+    algorithm: lbfgs         # sd | cg | bfgs | lbfgs
+    fmax: 1.0e-4             # eV/A, the largest force on any one atom
+    max_steps: 300
+    relax_cell: true         # relax the lattice vectors as well
+
+    # Everything below is optional; these are the defaults.
+    # max_step: 0.2          # trust radius in A
+    # alpha: 70.0            # initial curvature guess, eV/A^2
+    # line_search: wolfe     # none | backtracking | wolfe
+    # memory: 10             # L-BFGS correction pairs
+    # variant: polak_ribiere # CG only: polak_ribiere | fletcher_reeves | hestenes_stiefel
+    # pressure: 0.0          # external pressure in eV/A^3
+    # mask: [1, 1, 1, 1, 1, 1]   # which strain components may vary (Voigt)
+
+  output:
+    log: argon-relax.log

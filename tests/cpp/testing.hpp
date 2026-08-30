@@ -47,6 +47,8 @@ inline int run_all() {
     for (const Case& test : registry()) {
         const int before = failures();
         std::printf("  %s\n", test.name.c_str());
+        // Flushed so a hanging case is visible when the output is piped.
+        std::fflush(stdout);
         try {
             test.body();
         } catch (const std::exception& error) {

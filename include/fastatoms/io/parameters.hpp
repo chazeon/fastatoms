@@ -151,7 +151,7 @@ private:
 };
 
 /// What the run should do.
-enum class Task { SinglePoint, MolecularDynamics, Optimization, Custom };
+enum class Task { SinglePoint, MolecularDynamics, Optimization, Phonon, Custom };
 
 [[nodiscard]] Task task_from_string(std::string_view name);
 [[nodiscard]] std::string_view task_to_string(Task task);
@@ -175,6 +175,11 @@ struct MolecularDynamicsParameters {
     std::int64_t seed{0};
     bool initialize_velocities{false};
 
+    /// The unparsed `md:` subtree, so that settings the typed fields do not
+    /// cover - integrator, barostat, chain length, coupling times - reach the
+    /// dynamics unchanged.
+    Value parameters{};
+
     [[nodiscard]] double timestep_internal() const;
 };
 
@@ -184,6 +189,25 @@ struct OptimizerParameters {
     double fmax{0.05};        ///< eV/angstrom
     std::int64_t max_steps{200};
     bool relax_cell{false};
+
+    /// The unparsed `optimizer:` subtree, so that settings the typed fields do
+    /// not cover - line search, trust radius, external pressure - reach the
+    /// optimizer unchanged.
+    Value parameters{};
+};
+
+/// Phonon settings. `supercell` is an integer transformation matrix written
+/// either as three diagonal entries or as all nine.
+struct PhononParameters {
+    std::vector<double> supercell{2.0, 2.0, 2.0};  ///< 3 or 9 entries
+    double displacement{0.01};                     ///< angstrom
+    bool symmetry{true};                           ///< reduce the displacement set
+    double symmetry_tolerance{1e-5};               ///< angstrom
+
+    /// The unparsed `phonons:` subtree, so that settings the typed fields do
+    /// not cover - central differences, the acoustic sum rule, a q-point path -
+    /// reach the calculation unchanged.
+    Value parameters{};
 };
 
 /// Where results should go.
@@ -200,6 +224,7 @@ struct SimulationParameters {
     CalculatorParameters calculator{};
     MolecularDynamicsParameters md{};
     OptimizerParameters optimizer{};
+    PhononParameters phonon{};
     OutputParameters output{};
 
     /// The unparsed `simulation:` subtree, so that consumers can read keys the

@@ -9,9 +9,14 @@ set(FASTATOMS_BINDING_SOURCES
     bindings/bind_atoms.cpp
     bindings/bind_calculators.cpp
     bindings/bind_cell.cpp
+    bindings/bind_forcefield.cpp
     bindings/bind_elements.cpp
     bindings/bind_io.cpp
-    bindings/bind_neighbor_list.cpp)
+    bindings/bind_neighbor_list.cpp
+    bindings/bind_md.cpp
+    bindings/bind_mlip.cpp
+    bindings/bind_optimize.cpp
+    bindings/bind_phonon.cpp)
 
 pybind11_add_module(fastatoms_python MODULE ${FASTATOMS_BINDING_SOURCES})
 
@@ -37,7 +42,10 @@ endif()
 # directly importable: PYTHONPATH=<build>/python python -c "import fastatoms".
 set(FASTATOMS_PY_SOURCES
     fastatoms/__init__.py
-    fastatoms/py.typed)
+    fastatoms/py.typed
+    fastatoms/mlip/__init__.py
+    fastatoms/mlip/export.py
+    fastatoms/mlip/worker.py)
 
 foreach(source IN LISTS FASTATOMS_PY_SOURCES)
     configure_file(${CMAKE_CURRENT_SOURCE_DIR}/${source}
@@ -73,6 +81,11 @@ install(TARGETS fastatoms_python
     LIBRARY DESTINATION ${FASTATOMS_PYTHON_INSTALL_DIR})
 
 if(FASTATOMS_INSTALL_PY_SOURCES)
-    install(FILES ${FASTATOMS_PY_SOURCES}
+    install(FILES fastatoms/__init__.py fastatoms/py.typed
         DESTINATION ${FASTATOMS_PYTHON_INSTALL_DIR})
+    install(FILES
+            fastatoms/mlip/__init__.py
+            fastatoms/mlip/export.py
+            fastatoms/mlip/worker.py
+        DESTINATION ${FASTATOMS_PYTHON_INSTALL_DIR}/mlip)
 endif()

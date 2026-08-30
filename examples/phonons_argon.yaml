@@ -1,0 +1,45 @@
+# Harmonic phonons of fcc argon by finite displacements.
+#
+#   python python/examples/phonons.py examples/phonons_argon.yaml
+#   ./build/examples/fastatoms-run examples/phonons_argon.yaml
+#
+# The Lennard-Jones calculator needs no external program, so this input runs
+# as written. Point `calculator` at vasp, espresso or siesta and nothing else
+# in the file has to change - the module only ever asks a calculator for the
+# forces on a displaced supercell.
+#
+# The structure must be at a minimum: the harmonic expansion is taken about
+# the positions given here, and if a force is left on them the frequencies are
+# wrong. `residual_force` in the output is the check. Relax first with
+# examples/relax_argon.yaml if you change the lattice constant.
+
+structure:
+  # The primitive fcc cell, at the Lennard-Jones equilibrium volume.
+  cell:
+    - [0.000, 2.630, 2.630]
+    - [2.630, 0.000, 2.630]
+    - [2.630, 2.630, 0.000]
+  pbc: true
+  coordinates: fractional
+  atoms:
+    - {symbol: Ar, position: [0.0, 0.0, 0.0]}
+
+simulation:
+  task: phonon
+
+  calculator:
+    name: lennard_jones
+    parameters:
+      epsilon: 0.0103        # eV
+      sigma: 3.40            # A
+      cutoff: 8.0            # A
+
+  phonons:
+    supercell: [3, 3, 3]     # or all nine entries of a transformation matrix
+    displacement: 0.01       # A
+    symmetry: true           # displace only symmetrically distinct atoms
+
+    # Everything below is optional; these are the defaults.
+    # central: true            # +d and -d, so the error is O(d^2)
+    # acoustic_sum_rule: true  # force the three acoustic branches to zero at G
+    # symmetry_tolerance: 1.0e-5

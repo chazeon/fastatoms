@@ -244,6 +244,23 @@ FA_TEST(per_atom_cutoffs_detect_bonds) {
     FA_CHECK(coordination[1] == 1);
 }
 
+FA_TEST(degenerate_clusters_do_not_blow_up_the_search) {
+    // A collinear or planar non-periodic cluster has essentially zero extent
+    // in one or two directions. The bin search range has to stay finite there,
+    // or the pair loop never terminates.
+    Atoms dimer(std::vector<std::string>{"Ar", "Ar"}, {0.0, 0.0, 0.0, 4.2, 0.0, 0.0});
+    const NeighborList pairs = build_neighbor_list(dimer, 20.0);
+    FA_CHECK(pairs.size() == 2);
+    FA_CHECK_CLOSE(pairs.distances[0], 4.2, 1e-12);
+
+    Atoms square(std::vector<std::string>{"H", "H", "H", "H"},
+                 {0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0});
+    FA_CHECK(build_neighbor_list(square, 5.0).size() == 12);
+
+    Atoms single(std::vector<std::string>{"He"}, {0.0, 0.0, 0.0});
+    FA_CHECK(build_neighbor_list(single, 10.0).empty());
+}
+
 FA_TEST(invalid_arguments_are_rejected) {
     const Atoms crystal = random_structure(2, Cell::cubic(8.0), 71);
     FA_CHECK_THROWS(build_neighbor_list(crystal, 0.0), std::invalid_argument);

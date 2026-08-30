@@ -8,6 +8,7 @@ py::class_<io::InputDeck> bind_io(py::module_& m) {
         .value("single_point", Task::SinglePoint)
         .value("md", Task::MolecularDynamics)
         .value("optimize", Task::Optimization)
+        .value("phonon", Task::Phonon)
         .value("custom", Task::Custom);
 
     py::class_<CalculatorParameters>(m, "CalculatorParameters",
@@ -73,6 +74,7 @@ py::class_<io::InputDeck> bind_io(py::module_& m) {
         .def_readwrite("calculator", &SimulationParameters::calculator)
         .def_readwrite("md", &SimulationParameters::md)
         .def_readwrite("optimizer", &SimulationParameters::optimizer)
+        .def_readwrite("phonon", &SimulationParameters::phonon)
         .def_readwrite("output", &SimulationParameters::output)
         .def_readwrite("raw", &SimulationParameters::raw,
                        "The whole section as a dict, including keys FastAtoms ignores.")

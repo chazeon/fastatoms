@@ -82,5 +82,16 @@ wheelhouse/
 # FastAtoms
 _deps/
 
+# Output the shipped examples write when run from the repository root. They
+# use relative paths on purpose, so a copied input file writes next to itself;
+# running them in place should still leave the tree clean. (*.log is already
+# covered above; these are the trajectories, two of which are YAML and would
+# otherwise look like real input files.)
+argon-md.xyz
+si_md.yaml
+water_opt.yaml
+water-spce.xyz
+*.traj
+
 # Agent working notes (local only)
 CLAUDE.md

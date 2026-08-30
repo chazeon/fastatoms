@@ -17,6 +17,8 @@
 
 #include "fastatoms/fastatoms.hpp"
 
+using fastatoms::optimize::OptimizationResult;
+
 namespace py = pybind11;
 
 // ---------------------------------------------------------------------------
@@ -239,6 +241,14 @@ void bind_neighbor_list(py::module_& m);
 py::class_<io::InputDeck> bind_io(py::module_& m);
 void bind_calculators(py::module_& m, py::class_<Atoms>& atoms,
                       py::class_<io::InputDeck>& deck);
+void bind_optimize(py::module_& m, py::class_<Atoms>& atoms,
+                   py::class_<io::InputDeck>& deck);
+void bind_md(py::module_& m, py::class_<Atoms>& atoms, py::class_<io::InputDeck>& deck);
+void bind_phonon(py::module_& m, py::class_<io::InputDeck>& deck);
+/// The machine-learning potentials, which extend the calculator hierarchy.
+void bind_mlip(py::module_& m);
+/// The classical force field: water models, Ewald, and the constraints.
+void bind_forcefield(py::module_& m);
 
 /// Convert a Python property specification - a `Property`, a string, or a
 /// sequence of either - into the C++ list. `None` means the default set.

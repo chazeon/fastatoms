@@ -63,6 +63,70 @@ struct ProcessResult {
 [[nodiscard]] ProcessResult run_command(const std::string& command,
                                         const ProcessOptions& options = {});
 
+/// A child process kept alive across many requests, with pipes on its standard
+/// input and output.
+///
+/// `run_command` launches a program, waits, and collects its output; that is
+/// the right shape for a DFT run that takes minutes. A machine-learning
+/// potential is the opposite case - thousands of evaluations, each of them
+/// milliseconds - so the interpreter must be started once and then fed. This
+/// class is that: one `fork`/`exec`, then a binary request/response loop over
+/// pipes, with no shell, no temporary files and no per-call startup.
+///
+/// The child's standard error is redirected to a log file rather than a pipe,
+/// so a chatty program cannot deadlock by filling a buffer nobody drains.
+class Subprocess {
+public:
+    /// Launch `program` with `args` (argv[0] is added automatically).
+    ///
+    /// \throws std::runtime_error if the child cannot be started.
+    Subprocess(std::string program, std::vector<std::string> args,
+               const ProcessOptions& options = {});
+
+    ~Subprocess();
+
+    Subprocess(const Subprocess&) = delete;
+    Subprocess& operator=(const Subprocess&) = delete;
+
+    /// True while the child is believed to be alive and the pipes are open.
+    [[nodiscard]] bool running() const noexcept { return running_; }
+
+    [[nodiscard]] int pid() const noexcept { return pid_; }
+
+    /// Write exactly `bytes` to the child, retrying on partial writes.
+    /// \throws std::runtime_error if the child has gone away.
+    void write_exact(const void* data, std::size_t bytes);
+
+    /// Read exactly `bytes` from the child, retrying on partial reads.
+    /// \throws std::runtime_error on end of file or error.
+    void read_exact(void* data, std::size_t bytes);
+
+    /// Close the child's standard input, which is how a well-behaved worker is
+    /// asked to exit.
+    void close_input();
+
+    /// Wait for the child, returning its exit status. Idempotent.
+    int wait();
+
+    /// SIGTERM, then SIGKILL after a short grace period.
+    void terminate();
+
+    /// The tail of whatever the child wrote to standard error - the first
+    /// thing to look at when a request fails.
+    [[nodiscard]] std::string error_tail(std::size_t max_bytes = 4096) const;
+
+private:
+    std::string program_{};
+    std::filesystem::path log_path_{};
+    bool owns_log_{false};
+    int pid_{-1};
+    int to_child_{-1};
+    int from_child_{-1};
+    bool running_{false};
+    int status_{-1};
+    bool reaped_{false};
+};
+
 /// Value of an environment variable, or `fallback` when it is unset or empty.
 [[nodiscard]] std::string environment_value(const char* name, std::string fallback = {});
 

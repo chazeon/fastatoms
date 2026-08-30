@@ -1,0 +1,65 @@
+# Molecular dynamics on solid argon.
+#
+#   ./build/examples/fastatoms-run examples/md_argon.yaml
+#   python python/examples/molecular_dynamics.py examples/md_argon.yaml
+#
+# The Lennard-Jones calculator needs no external program, so this runs as
+# written. Point `calculator` at vasp, espresso or siesta and nothing else in
+# the file has to change.
+
+structure:
+  cell: {a: 5.30, b: 5.30, c: 5.30}
+  pbc: true
+  coordinates: fractional
+  symbols: [Ar, Ar, Ar, Ar]
+  positions:
+    - [0.0, 0.0, 0.0]
+    - [0.0, 0.5, 0.5]
+    - [0.5, 0.0, 0.5]
+    - [0.5, 0.5, 0.0]
+
+simulation:
+  task: md
+
+  calculator:
+    name: lennard_jones
+    parameters:
+      epsilon: 0.0103        # eV
+      sigma: 3.40            # A
+      cutoff: 8.5            # A
+
+  md:
+    ensemble: nvt            # nve | nvt | npt
+    integrator: velocity_verlet   # velocity_verlet | leapfrog | euler
+    timestep: 5.0            # fs
+    steps: 2000
+    temperature: 60.0        # K
+    initialize_velocities: true
+    seed: 20260830
+
+    thermostat: nose_hoover  # nose_hoover | nose | langevin | berendsen
+    tau: 100.0               # fs, the thermostat coupling time
+    chain_length: 3          # Nose-Hoover chains; 1 is the plain thermostat
+
+    # Langevin instead - stochastic, ergodic, and the friction is the knob:
+    #
+    #   thermostat: langevin
+    #   friction: 0.01         # 1/fs
+    #   seed: 20260830         # makes the noise reproducible
+
+    # ------------------------------------------------------------------
+    # For NPT, add a barostat and a target pressure:
+    #
+    #   ensemble: npt
+    #   pressure: 0.0          # GPa
+    #   barostat: parrinello_rahman   # or berendsen
+    #   barostat:                     # ...or as a block, with its own settings
+    #     name: parrinello_rahman
+    #     tau: 1000.0                 # fs, slower than the thermostat
+    #     isotropic: true             # size only; false lets the shape change
+    # ------------------------------------------------------------------
+
+  output:
+    trajectory: argon-md.xyz   # extended XYZ: positions, velocities, forces
+    log: argon-md.log
+    interval: 20

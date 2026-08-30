@@ -1,0 +1,66 @@
+# Rigid SPC/E water: a classical force field with Ewald electrostatics and
+# SHAKE/RATTLE constraints.
+#
+#   python python/examples/water.py examples/water_spce.yaml
+#   ./build/examples/fastatoms-run examples/water_spce.yaml
+#
+# Everything here runs with no external program and no model file: the
+# parameters are the published SPC/E ones, compiled in.
+#
+# The structure below is a single molecule, so the file stays readable. For a
+# real run, build a box in Python - `fa.water_box("spce", 108)` - or point this
+# file at one; nothing in the `simulation` section changes.
+
+structure:
+  cell: {a: 9.8654, b: 9.8654, c: 9.8654}
+  pbc: true
+  atoms:
+    - {symbol: O, position: [4.9327, 4.9327, 4.9327]}
+    - {symbol: H, position: [5.5101, 5.7492, 4.9327]}
+    - {symbol: H, position: [5.5101, 4.1162, 4.9327]}
+
+simulation:
+  task: md
+
+  calculator:
+    name: forcefield         # or spc / spce / tip3p, which preset the model
+    parameters:
+      model: spce            # spc | spce | tip3p
+
+      # Ewald settings. Everything not given is derived from `accuracy`: the
+      # splitting parameter from the real-space cutoff, and the reciprocal
+      # cutoff from the splitting. The defaults are good.
+      accuracy: 1.0e-6       # target relative accuracy of the electrostatics
+      # cutoff: 9.0          # real-space cutoff in A; default is half the box
+      # alpha: 0.35          # splitting parameter in 1/A
+      # kcutoff: 3.0         # reciprocal-space cutoff in 1/A
+
+      # Lennard-Jones handling beyond the cutoff.
+      shift: true            # shift to zero at the cutoff, so no pair steps
+      tail: true             # isotropic correction for what lies beyond it
+
+      # SPC/E carries a polarisation self-energy of 5.22 kcal/mol per molecule.
+      # It shifts the energy, never a force; turn it off to compare with SPC.
+      self_energy: true
+
+  md:
+    ensemble: nvt
+    integrator: velocity_verlet
+    thermostat: nose_hoover
+    timestep: 2.0            # fs - only legitimate because the molecule is rigid
+    steps: 500
+    temperature: 300.0
+    tau: 100.0               # fs
+    initialize_velocities: true
+    seed: 20260830
+
+    # The constraints come from the calculator: a water model knows its own
+    # bond lengths and angle. `constraints: false` turns them off - but note
+    # that a rigid model has no bond stretch to fall back on, so without them
+    # the molecules come apart rather than merely vibrating.
+    # constraints: true
+    # constraint_tolerance: 1.0e-10
+
+  output:
+    log: water-spce.log
+    interval: 50

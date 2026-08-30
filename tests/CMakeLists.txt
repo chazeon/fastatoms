@@ -8,7 +8,15 @@ set(FASTATOMS_CPP_TESTS
     test_neighbor_list
     test_yaml
     test_calculators
-    test_dft_calculators)
+    test_dft_calculators
+    test_mlip
+    test_forcefield
+    test_optimizers
+    test_relaxation
+    test_md
+    test_md_ensembles
+    test_phonon_setup
+    test_phonons)
 
 foreach(test_name IN LISTS FASTATOMS_CPP_TESTS)
     add_executable(${test_name} cpp/${test_name}.cpp)
@@ -26,6 +34,6 @@ if(FASTATOMS_BUILD_PYTHON)
                 "${CMAKE_CURRENT_SOURCE_DIR}/python"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
     set_tests_properties(python.bindings PROPERTIES
-        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python"
+        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python;PYTHONDONTWRITEBYTECODE=1"
         DEPENDS fastatoms_python)
 endif()

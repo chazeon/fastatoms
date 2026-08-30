@@ -432,3 +432,12 @@ def test_units_match_ase_conventions():
 
 def test_version_is_exposed():
     assert fa.__version__.count(".") >= 2
+
+
+def test_package_docstring_examples():
+    """The quick-start examples in the package docstring have to still work."""
+    import doctest
+
+    result = doctest.testmod(fa, extraglobs={"fa": fa}, verbose=False)
+    assert result.attempted > 0
+    assert result.failed == 0

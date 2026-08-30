@@ -5,6 +5,8 @@
 #include <mutex>
 
 #include "fastatoms/calculators/lennard_jones.hpp"
+#include "fastatoms/calculators/mlip_models.hpp"
+#include "fastatoms/forcefield/forcefield.hpp"
 #include "fastatoms/calculators/quantum_espresso.hpp"
 #include "fastatoms/calculators/siesta.hpp"
 #include "fastatoms/calculators/vasp.hpp"
@@ -47,6 +49,24 @@ Registry& registry() {
         add("siesta", [](const Value& p) { return std::make_shared<SiestaCalculator>(p); });
         add("lennard_jones",
             [](const Value& p) { return std::make_shared<LennardJonesCalculator>(p); });
+        add("forcefield",
+            [](const Value& p) { return std::make_shared<ff::ForcefieldCalculator>(p); });
+
+        // The machine-learning potentials. These are added here rather than
+        // from their own translation unit because `register_calculator` would
+        // re-enter this very initialiser and deadlock on it.
+        add("mace", [](const Value& p) { return std::make_shared<mlip::MACECalculator>(p); });
+        add("mattersim",
+            [](const Value& p) { return std::make_shared<mlip::MatterSimCalculator>(p); });
+        add("chgnet",
+            [](const Value& p) { return std::make_shared<mlip::CHGNetCalculator>(p); });
+        add("nequip",
+            [](const Value& p) { return std::make_shared<mlip::NequIPCalculator>(p, false); });
+        add("allegro",
+            [](const Value& p) { return std::make_shared<mlip::NequIPCalculator>(p, true); });
+        // A family this build does not know by name: the worker can drive any
+        // ASE calculator, and the TorchScript backend any conforming archive.
+        add("mlip", [](const Value& p) { return std::make_shared<mlip::MLIPCalculator>(p); });
 
         // Aliases share a factory but are not listed separately.
         for (const char* alias : {"quantum_espresso", "qe", "pw", "pwscf"}) {
@@ -54,6 +74,24 @@ Registry& registry() {
         }
         for (const char* alias : {"lj", "lennardjones"}) {
             instance.factories[canonical(alias)] = instance.factories[canonical("lennard_jones")];
+        }
+        // Naming a model is enough: `spce` means the force field with
+        // model=spce, not a force field waiting to be told which one.
+        for (const char* model : {"spc", "spce", "tip3p"}) {
+            const std::string name(model);
+            instance.factories[canonical(model)] = [name](const Value& p) {
+                Value parameters = p.is_map() ? p : Value(Value::Map{});
+                if (!parameters.contains("model")) {
+                    parameters.insert("model", Value(name));
+                }
+                return std::make_shared<ff::ForcefieldCalculator>(parameters);
+            };
+        }
+        for (const char* alias : {"water", "classical"}) {
+            instance.factories[canonical(alias)] = instance.factories[canonical("forcefield")];
+        }
+        for (const char* alias : {"mace_mp", "mace_off", "maceoff", "macemp"}) {
+            instance.factories[canonical(alias)] = instance.factories[canonical("mace")];
         }
         return true;
     }();

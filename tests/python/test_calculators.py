@@ -439,12 +439,12 @@ def test_a_finished_run_can_be_parsed_afterwards(tmp_path):
 
 
 def test_registry():
-    assert set(fa.registered_calculators()) == {
-        "vasp",
-        "espresso",
-        "siesta",
-        "lennard_jones",
-    }
+    names = set(fa.registered_calculators())
+    # The engines that write input files and run a program, plus the classical
+    # force field...
+    assert {"vasp", "espresso", "siesta", "lennard_jones", "forcefield"} <= names
+    # ...and the machine-learning families, covered in detail by test_mlip.py.
+    assert {"mace", "mattersim", "chgnet", "nequip", "allegro", "mlip"} <= names
     assert fa.make_calculator("VASP").name == "vasp"
     assert fa.make_calculator("quantum-espresso").name == "espresso"
     assert fa.make_calculator("lj", epsilon=0.5).parameters["epsilon"] == 0.5

@@ -543,6 +543,7 @@ SimulationParameters simulation_from_value_impl(const Value& node) {
 
     if (const Value& md = first_of(node, {"md", "dynamics", "molecular_dynamics"});
         !md.is_null()) {
+        params.md.parameters = md;
         params.md.ensemble = lowercase(first_of(md, {"ensemble"}).value_or("nve"));
         params.md.timestep_fs = first_of(md, {"timestep", "dt", "time_step"}).value_or(1.0);
         params.md.steps = first_of(md, {"steps", "n_steps", "nsteps", "num_steps"}).value_or(
@@ -566,6 +567,7 @@ SimulationParameters simulation_from_value_impl(const Value& node) {
 
     if (const Value& opt = first_of(node, {"optimizer", "optimization", "relaxation"});
         !opt.is_null()) {
+        params.optimizer.parameters = opt;
         params.optimizer.algorithm =
             lowercase(first_of(opt, {"algorithm", "method", "name"}).value_or("bfgs"));
         params.optimizer.fmax = first_of(opt, {"fmax", "force_tolerance"}).value_or(0.05);
@@ -576,6 +578,42 @@ SimulationParameters simulation_from_value_impl(const Value& node) {
 
         if (params.optimizer.fmax <= 0.0) {
             throw InputError("optimizer.fmax: must be positive");
+        }
+    }
+
+    if (const Value& ph = first_of(node, {"phonons", "phonon", "vibrations"}); !ph.is_null()) {
+        params.phonon.parameters = ph;
+
+        if (const Value& sc = first_of(ph, {"supercell", "supercell_matrix", "dim"});
+            !sc.is_null()) {
+            std::vector<double> entries;
+            if (sc.is_number()) {
+                entries.assign(3, sc.as_double());
+            } else {
+                entries = sc.as_doubles();
+            }
+            if (entries.size() != 3 && entries.size() != 9) {
+                throw InputError("phonons.supercell: expected 1, 3 or 9 integers");
+            }
+            for (const double n : entries) {
+                if (n != std::floor(n)) {
+                    throw InputError("phonons.supercell: entries must be whole numbers");
+                }
+            }
+            params.phonon.supercell = std::move(entries);
+        }
+
+        params.phonon.displacement =
+            first_of(ph, {"displacement", "distance", "delta"}).value_or(0.01);
+        params.phonon.symmetry = first_of(ph, {"symmetry", "use_symmetry"}).value_or(true);
+        params.phonon.symmetry_tolerance =
+            first_of(ph, {"symmetry_tolerance", "symprec", "tolerance"}).value_or(1e-5);
+
+        if (params.phonon.displacement <= 0.0) {
+            throw InputError("phonons.displacement: must be positive");
+        }
+        if (params.phonon.symmetry_tolerance <= 0.0) {
+            throw InputError("phonons.symmetry_tolerance: must be positive");
         }
     }
 

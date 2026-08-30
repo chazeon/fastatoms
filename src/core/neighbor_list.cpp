@@ -178,7 +178,22 @@ NeighborList build_neighbor_list(const Atoms& atoms, const NeighborListOptions& 
         // many bins along direction k. Values above 1 only occur when the cell
         // is thinner than the cutoff.
         const double h = heights[k] > 0.0 ? heights[k] : 1.0;
-        const double reach = rc * static_cast<double>(grid.nbins[k]) / (h * span[k]);
+        double reach = rc * static_cast<double>(grid.nbins[k]) / (h * span[k]);
+
+        if (!grid.pbc[k]) {
+            // Bins outside the grid are skipped, so searching further than the
+            // grid is wasted work. The clamp also keeps a degenerate direction
+            // finite: a flat or collinear cluster has a span of essentially
+            // zero, which would otherwise ask for an astronomical range.
+            reach = std::min(reach, static_cast<double>(grid.nbins[k]));
+        } else if (!(reach < 1e6)) {
+            // Only reachable by asking for a cutoff vastly larger than the
+            // periodic cell, which is a mistake worth naming.
+            throw std::invalid_argument(
+                "build_neighbor_list: a cutoff of " + std::to_string(rc) +
+                " would need more than a million periodic images along lattice direction " +
+                std::to_string(k) + "; check the cutoff and the cell");
+        }
         grid.search[k] = std::max(1, static_cast<int>(std::ceil(reach)));
     }
 

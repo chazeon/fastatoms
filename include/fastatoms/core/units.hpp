@@ -53,4 +53,8 @@ inline constexpr double kJ_per_mol = 1.0364269656262173e-2;
 /// GPa in eV/angstrom^3.
 inline constexpr double GPa = 1.0 / 160.21766208;
 
+/// Coulomb's constant `1/(4 pi eps0)` in eV*angstrom/e^2, so that the energy
+/// of two elementary charges an angstrom apart is 14.4 eV.
+inline constexpr double coulomb = 14.399645470586200;
+
 }  // namespace fastatoms::units

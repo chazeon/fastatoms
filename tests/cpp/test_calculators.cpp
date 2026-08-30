@@ -4,6 +4,7 @@
 // and the process runner. The DFT interfaces are exercised in
 // test_dft_calculators.cpp.
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <random>
@@ -348,8 +349,13 @@ FA_TEST(registry_builds_the_built_in_calculators) {
 
     FA_CHECK_THROWS(make_calculator("gaussian"), CalculatorError);
 
+    // The built-in engines, plus the classical force field and the
+    // machine-learning families, which their own suites cover in detail.
     const std::vector<std::string> names = registered_calculators();
-    FA_CHECK(names.size() == 4);
+    for (const char* expected : {"vasp", "espresso", "siesta", "lennard_jones", "forcefield"}) {
+        FA_CHECK(std::find(names.begin(), names.end(), expected) != names.end());
+    }
+    FA_CHECK(names.size() == 11);
 }
 
 FA_TEST(registry_passes_parameters_through) {

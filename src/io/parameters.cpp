@@ -475,6 +475,9 @@ Task task_from_string(std::string_view name) {
         key == "minimization") {
         return Task::Optimization;
     }
+    if (key == "phonon" || key == "phonons" || key == "vibrations" || key == "frequencies") {
+        return Task::Phonon;
+    }
     return Task::Custom;
 }
 
@@ -483,6 +486,7 @@ std::string_view task_to_string(Task task) {
         case Task::SinglePoint:        return "single_point";
         case Task::MolecularDynamics:  return "md";
         case Task::Optimization:       return "optimize";
+        case Task::Phonon:             return "phonon";
         case Task::Custom:             return "custom";
     }
     return "custom";

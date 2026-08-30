@@ -10,6 +10,7 @@
 
 #include "fastatoms/calculators/results.hpp"
 #include "fastatoms/core/atoms.hpp"
+#include "fastatoms/core/constraint.hpp"
 
 namespace fastatoms {
 
@@ -76,6 +77,17 @@ public:
     void set_parameters(Value parameters);
     void set_parameter(const std::string& key, Value value);
     /// @}
+
+    /// The rigid-geometry constraints this model implies, or null when it
+    /// implies none.
+    ///
+    /// A rigid water model fixes its own bond lengths and angle, and the
+    /// dynamics has to know that to keep them fixed and to count the degrees
+    /// of freedom correctly. Rather than have the user restate it, the
+    /// calculator that knows the model says so, and `Dynamics` picks it up.
+    [[nodiscard]] virtual const std::vector<DistanceConstraint>* rigid_constraints() const {
+        return nullptr;
+    }
 
     /// Human-readable summary, used by the Python `repr`.
     [[nodiscard]] virtual std::string to_string() const;

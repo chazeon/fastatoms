@@ -14,7 +14,7 @@ Quick start
 >>> silicon = fa.Atoms("Si", [[0.0, 0.0, 0.0]], cell=5.43, pbc=True).repeat(4, 4, 4)
 >>> len(silicon)
 64
->>> neighbours = fa.neighbor_list(silicon, 4.0)
+>>> neighbours = fa.neighbor_list(silicon, 6.0)
 >>> len(neighbours) > 0
 True
 
@@ -42,6 +42,85 @@ script is unchanged::
     atoms.calc = fa.Vasp(xc="pbe", encut=400, kpts=[4, 4, 4], directory="run")
     atoms.calc = fa.Espresso(pseudopotentials={"Si": "Si.upf"}, ecutwfc=40.0)
     atoms.calc = fa.Siesta(xc="pbe", mesh_cutoff=250.0)
+
+Relaxing a structure
+--------------------
+
+>>> crystal = fa.Atoms("Ar", [[0.1, 0.0, 0.0]], cell=5.3, pbc=True).repeat(2, 2, 2)
+>>> crystal.calc = fa.LennardJones()
+>>> result = fa.BFGS(fmax=0.01).run(crystal)
+>>> result.converged
+True
+
+Any of :class:`SteepestDescent`, :class:`ConjugateGradient`, :class:`BFGS` and
+:class:`LBFGS` will do; add ``relax_cell=True`` to relax the cell as well.
+
+Molecular dynamics
+------------------
+
+>>> run = fa.run_md(crystal, 200, timestep=5.0, temperature=60.0,
+...                 thermostat="nose_hoover", seed=1)
+>>> run.completed
+True
+>>> run.evaluations                       # one force call per step
+200
+
+Swap the pieces freely: ``integrator`` is "velocity_verlet" (default),
+"leapfrog" or "euler"; ``thermostat`` is "nose_hoover", "nose" or "berendsen";
+``barostat`` is "parrinello_rahman" or "berendsen".
+
+For a stochastic, ergodic thermostat use Langevin dynamics::
+
+    fa.run_md(atoms, 2000, temperature=300.0, thermostat="langevin",
+              friction=0.01)      # 1/fs
+
+Phonons
+-------
+
+>>> argon = fa.Atoms("Ar", [[0.0, 0.0, 0.0]], cell=5.26, pbc=True)
+>>> ph = fa.Phonons(argon, supercell=[2, 2, 2])
+>>> ph.calculation_count, ph.calculation_count_without_symmetry
+(2, 6)
+
+Symmetry decides which atoms and directions have to be displaced at all. Run
+the displacements, then ask for frequencies anywhere in the Brillouin zone::
+
+    ph.run()                          # uses atoms.calc
+    ph.frequencies([0.5, 0.0, 0.0])   # THz
+
+Machine-learning potentials
+---------------------------
+
+A model exported to TorchScript runs in this process through LibTorch, with no
+Python in the evaluation loop::
+
+    atoms.calc = fa.MACE(model="mace-off23-small.pt")
+    atoms.get_potential_energy()
+
+Models that cannot be scripted - MatterSim among them - are driven by one
+long-lived interpreter in the environment that has the package installed, so a
+step costs a pipe round trip rather than an interpreter start::
+
+    atoms.calc = fa.MatterSim()          # mlip_env
+    fa.run_md(atoms, 1000, temperature=300.0, thermostat="langevin")
+
+>>> fa.mlip_environment_for("mace"), fa.mlip_environment_for("chgnet")
+('mace_env', 'mlip_env')
+
+Rigid water
+-----------
+
+>>> atoms = fa.water_box("spce", 32)          # 32 molecules at 0.997 g/cm^3
+>>> atoms.calc = fa.Forcefield(model="spce")
+>>> atoms.calc.prepare(atoms)                 # find the molecules
+>>> len(atoms.calc.constraints)               # three per molecule, kept rigid
+96
+
+Electrostatics are summed by Ewald, not truncated, and the O-H bonds and H-O-H
+angle are held by SHAKE and RATTLE - which is what makes a 2 fs step legitimate::
+
+    fa.run_md(atoms, 1000, timestep=2.0, temperature=300.0,
+              thermostat="nose_hoover")
 """
 
 from __future__ import annotations
@@ -55,32 +134,109 @@ from ._core import (
     Calculator,
     CalculatorError,
     CalculatorParameters,
+    CHGNet,
     Cell,
+    BFGS,
+    CG,
+    Allegro,
+    Barostat,
+    BerendsenBarostat,
+    BerendsenThermostat,
+    ConjugateGradient,
+    ConstraintReport,
+    Constraints,
+    Displacement,
+    DistanceConstraint,
+    Dynamics,
+    DynamicsError,
+    DynamicsResult,
+    DynamicsStep,
+    DynamicsStopReason,
     Espresso,
+    EnergyBreakdown,
+    Euler,
+    Ewald,
+    EwaldEnergy,
     FileIOCalculator,
+    Forcefield,
+    ForceConstants,
+    Integrator,
+    LBFGS,
+    Langevin,
+    Leapfrog,
     LennardJones,
+    MACE,
+    MLIP,
+    MLIPGraph,
+    MLIPModelInfo,
+    MatterSim,
     InputDeck,
     InputError,
+    Molecule,
     MolecularDynamicsParameters,
     NeighborList,
+    NequIP,
+    WaterModel,
+    Nose,
+    NoseHoover,
+    OptimizationResult,
+    OptimizationStep,
+    Optimizer,
+    OptimizerError,
     OptimizerParameters,
     OutputParameters,
+    ParrinelloRahman,
+    PhononError,
+    PhononModes,
+    PhononParameters,
+    Phonons,
     Property,
     QuantumEspresso,
     Results,
+    SD,
     SimulationParameters,
     Siesta,
+    SteepestDescent,
+    StopReason,
+    SupercellMap,
+    SymmetryDataset,
+    SymmetryOperation,
     Task,
+    Topology,
+    Thermostat,
+    TrajectoryWriter,
     Vasp,
+    VelocityVerlet,
     __version__,
     atomic_mass,
     atoms_from_dict,
+    barostat_names,
+    conda_python,
     covalent_radius,
+    detect_molecules,
+    find_symmetry,
+    instantaneous_pressure,
+    integrator_names,
+    kinetic_stress,
+    lattice_point_group,
+    make_barostat,
     make_calculator,
+    make_dynamics,
+    make_integrator,
+    make_optimizer,
+    mlip_environment_for,
+    mlip_graph,
+    mlip_worker_script,
+    make_phonons,
+    make_supercell,
+    make_thermostat,
     matrix_to_voigt,
+    maxwell_boltzmann,
+    momentum_degrees_of_freedom,
     natural_cutoffs,
     neighbor_list,
     number_from_symbol,
+    optimize,
     parse_yaml,
     parse_yaml_file,
     pressure_from_stress,
@@ -88,10 +244,24 @@ from ._core import (
     read_atoms,
     read_string,
     register_calculator,
+    register_optimizer,
     registered_calculators,
+    registered_optimizers,
+    rescale_to_temperature,
+    run_md,
     simulation_from_dict,
+    site_symmetry,
+    torch_available,
+    torch_version,
+    water_box,
+    water_model,
+    water_model_names,
+    water_molecule,
+    water_topology,
     symbol_from_number,
+    thermostat_names,
     to_yaml,
+    total_stress,
     units,
     vasp_species_layout,
     voigt_to_matrix,
@@ -99,39 +269,116 @@ from ._core import (
 )
 
 __all__ = [
+    "BFGS",
+    "CG",
+    "LBFGS",
+    "Allegro",
+    "Barostat",
+    "BerendsenBarostat",
+    "BerendsenThermostat",
     "MAX_ATOMIC_NUMBER",
+    "SD",
     "Atom",
     "Atoms",
     "Calculator",
     "CalculatorError",
     "CalculatorParameters",
+    "CHGNet",
     "Cell",
     "Espresso",
     "FileIOCalculator",
     "InputDeck",
     "InputError",
     "LennardJones",
+    "MACE",
+    "MLIP",
+    "MLIPGraph",
+    "MLIPModelInfo",
+    "MatterSim",
+    "Molecule",
     "MolecularDynamicsParameters",
+    "ConjugateGradient",
+    "ConstraintReport",
+    "Constraints",
+    "Displacement",
+    "DistanceConstraint",
+    "Dynamics",
+    "DynamicsError",
+    "DynamicsResult",
+    "DynamicsStep",
+    "DynamicsStopReason",
+    "EnergyBreakdown",
+    "Euler",
+    "Ewald",
+    "EwaldEnergy",
+    "ForceConstants",
+    "Forcefield",
+    "Integrator",
+    "Langevin",
+    "Leapfrog",
     "NeighborList",
+    "NequIP",
+    "Nose",
+    "NoseHoover",
+    "OptimizationResult",
+    "OptimizationStep",
+    "Optimizer",
+    "OptimizerError",
     "OptimizerParameters",
     "OutputParameters",
+    "ParrinelloRahman",
+    "PhononError",
+    "PhononModes",
+    "PhononParameters",
+    "Phonons",
     "Property",
     "QuantumEspresso",
     "Results",
     "SimulationParameters",
     "Siesta",
+    "SteepestDescent",
+    "StopReason",
+    "SupercellMap",
+    "SymmetryDataset",
+    "SymmetryOperation",
     "Task",
+    "Topology",
+    "WaterModel",
+    "Thermostat",
+    "TrajectoryWriter",
+    "VelocityVerlet",
     "Vasp",
     "__version__",
     "atomic_mass",
     "atoms_from_dict",
+    "barostat_names",
+    "conda_python",
     "covalent_radius",
+    "detect_molecules",
+    "find_symmetry",
     "from_ase",
+    "instantaneous_pressure",
+    "integrator_names",
+    "kinetic_stress",
+    "lattice_point_group",
+    "make_barostat",
     "make_calculator",
+    "make_dynamics",
+    "make_integrator",
+    "make_optimizer",
+    "mlip_environment_for",
+    "mlip_graph",
+    "mlip_worker_script",
+    "make_phonons",
+    "make_supercell",
+    "make_thermostat",
     "matrix_to_voigt",
+    "maxwell_boltzmann",
+    "momentum_degrees_of_freedom",
     "natural_cutoffs",
     "neighbor_list",
     "number_from_symbol",
+    "optimize",
     "parse_yaml",
     "parse_yaml_file",
     "pressure_from_stress",
@@ -139,11 +386,25 @@ __all__ = [
     "read_atoms",
     "read_string",
     "register_calculator",
+    "register_optimizer",
     "registered_calculators",
+    "registered_optimizers",
+    "rescale_to_temperature",
+    "run_md",
     "simulation_from_dict",
+    "site_symmetry",
+    "torch_available",
+    "torch_version",
+    "water_box",
+    "water_model",
+    "water_model_names",
+    "water_molecule",
+    "water_topology",
     "symbol_from_number",
+    "thermostat_names",
     "to_ase",
     "to_yaml",
+    "total_stress",
     "units",
     "vasp_species_layout",
     "voigt_to_matrix",

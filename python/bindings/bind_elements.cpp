@@ -55,6 +55,7 @@ count as bonded when their distance is below the sum of their cutoffs.
     units.attr("Hartree") = units::Hartree;
     units.attr("Rydberg") = units::Rydberg;
     units.attr("kcal_per_mol") = units::kcal_per_mol;
+    units.attr("coulomb") = units::coulomb;
     units.attr("kJ_per_mol") = units::kJ_per_mol;
     units.attr("GPa") = units::GPa;
 }

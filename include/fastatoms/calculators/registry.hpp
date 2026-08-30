@@ -25,8 +25,9 @@ void register_calculator(const std::string& name, CalculatorFactory factory);
 /// Build a calculator by name.
 ///
 /// Recognised out of the box: `vasp`, `espresso` (aliases `quantum_espresso`,
-/// `qe`, `pw`), `siesta`, and `lennard_jones` (alias `lj`). Matching ignores
-/// case, hyphens and underscores.
+/// `qe`, `pw`), `siesta`, `lennard_jones` (alias `lj`), and the machine-learning
+/// potentials `mace`, `mattersim`, `chgnet`, `nequip`, `allegro` and the
+/// generic `mlip`. Matching ignores case, hyphens and underscores.
 ///
 /// \throws CalculatorError if the name is not registered.
 [[nodiscard]] std::shared_ptr<Calculator> make_calculator(std::string_view name,
