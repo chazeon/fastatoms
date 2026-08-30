@@ -20,6 +20,8 @@ set(FASTATOMS_CPP_TESTS
     test_symmetry
     test_analysis
     test_electronic
+    test_adsorption
+    test_globalopt
     test_md
     test_md_ensembles
     test_phonon_setup

@@ -7,6 +7,8 @@ set(FASTATOMS_BINDING_SOURCES
     bindings/module.cpp
     bindings/helpers.cpp
     bindings/bind_atoms.cpp
+    bindings/bind_adsorption.cpp
+    bindings/bind_globalopt.cpp
     bindings/bind_analysis.cpp
     bindings/bind_electronic.cpp
     bindings/bind_build.cpp

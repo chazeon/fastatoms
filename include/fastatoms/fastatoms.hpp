@@ -11,6 +11,8 @@
 #include "fastatoms/electronic/bandpath.hpp"
 #include "fastatoms/electronic/bands.hpp"
 #include "fastatoms/electronic/dos.hpp"
+#include "fastatoms/adsorption/sites.hpp"
+#include "fastatoms/globalopt/basin_hopping.hpp"
 #include "fastatoms/analysis/rdf.hpp"
 #include "fastatoms/analysis/structure_factor.hpp"
 #include "fastatoms/analysis/surface_tension.hpp"

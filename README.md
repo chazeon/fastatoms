@@ -50,12 +50,14 @@ print(atoms.get_space_group().hermann_mauguin)      # Fd-3m
 | **Calculators** | Lennard-Jones and a classical force field in C++; VASP, Quantum ESPRESSO and SIESTA through generated inputs and parsed output |
 | **Machine-learning potentials** | MACE, MatterSim, CHGNet, NequIP and Allegro, evaluated in-process through LibTorch or through a persistent worker |
 | **Geometry optimizers** | Steepest descent, conjugate gradient, BFGS, L-BFGS and FIRE, with line searches and combined position–cell relaxation |
+| **Global optimization** | Basin hopping over the local minima, with Metropolis acceptance, adaptive steps and four kinds of Monte Carlo move |
 | **Molecular dynamics** | NVE, NVT and NPT; velocity Verlet, leapfrog and Euler; Berendsen, Langevin, Nosé and Nosé–Hoover thermostats; Berendsen and Parrinello–Rahman barostats |
 | **Constraints** | `FixAtoms`, `FixLine` and `FixPlane`, respected by every optimizer, integrator and band alike, with SHAKE/RATTLE for rigid geometry |
 | **Reaction paths** | NEB, climbing-image NEB and AutoNEB, with IDPP interpolation for starting bands |
 | **Phonons** | Harmonic phonons by finite displacements, with a symmetry-reduced displacement set and no Phonopy dependency |
 | **Classical force fields** | SPC and SPC/E rigid water, Ewald electrostatics, SHAKE and RATTLE |
 | **Structure builders** | Bulk lattices, graphene and transition-metal dichalcogenides, nanotubes by (n, m), icosahedra, decahedra, cuboctahedra and Wulff constructions |
+| **Adsorption** | Atop, bridge, hollow and four-fold sites on nanoparticles and slabs, reduced to symmetry-distinct ones, with oriented molecular adsorbates and coverage series |
 | **Crystallographic symmetry** | Space groups 1–230 with derived Hermann–Mauguin symbols, Wyckoff positions, and primitive ↔ conventional cell standardization |
 | **Trajectory analysis** | Radial distribution functions, static structure factors by three routes, and interfacial tension from the pressure tensor |
 | **Electronic structure** | High-symmetry band paths, densities of state by linear tetrahedron and by smearing, direct and indirect band gaps |
@@ -159,6 +161,8 @@ More, in [`python/examples/`](python/examples/):
 
 ```sh
 python python/examples/build.py         # lattices, sheets, tubes, nanoparticles
+python python/examples/adsorption.py    # adsorption sites on a Pt55 particle
+python python/examples/basin_hopping.py # the global minimum of an LJ cluster
 python python/examples/constraints.py   # three questions about one adatom
 python python/examples/neb.py           # reaction paths and barriers
 python python/examples/phonons.py       # dispersions and densities of state
@@ -168,7 +172,9 @@ python python/examples/phonons.py       # dispersions and densities of state
 
 ```
 include/fastatoms/     public headers (the C++ API)
+  adsorption/          sites (atop, bridge, hollow, four-fold), placement
   build/               bulk, twod (graphene, TMDs), nanotube, cluster (Wulff)
+  globalopt/           basin_hopping
   analysis/            rdf, structure_factor, surface_tension
   electronic/          bandpath, bands, dos (tetrahedron and smearing)
   symmetry/            pointgroup, spacegroup, standardize
@@ -876,6 +882,112 @@ is the known result for a Lennard-Jones potential: its five per cent internal
 strain costs less than the extra surface a cuboctahedron of the same size
 exposes. Real metals cross over to fcc shapes far earlier.
 
+## Adsorption
+
+Where an adsorbate can bind, which of those places are really different, and
+what a molecule looks like once it is there.
+
+```python
+particle = fa.build.icosahedron("Pt", shells=2, d=2.77)      # Pt55
+finder = fa.adsorption.AdsorptionFinder(particle, height=1.9)
+
+print(finder.summary())
+fa.write("oh_sites.extxyz", finder.trajectory("OH"))
+```
+
+```
+55 atoms, 42 on the surface; 242 sites, 6 unique
+  atop: 42 sites, 2 unique
+  bridge: 120 sites, 2 unique
+  hollow: 80 sites, 2 unique
+```
+
+### Finding the sites
+
+Surface atoms are the ones whose coordination falls short of the highest
+present, which separates the skin of a particle from its interior without being
+told what the bulk number is. "Outward" is then measured from where an atom's
+neighbours *are not* — the negative of the summed unit vectors to them — so a
+facet of an icosahedron and the top of a slab are handled by the same code with
+no axis assumed anywhere.
+
+Sites come from the topology: one atop site per surface atom, one bridge per
+bonded pair, one hollow per mutually bonded triple, and one four-fold site per
+genuine square. A site is discarded if the place the adsorbate would go is not
+actually clear, which is what removes the underside of a bridge and the hollows
+that are really inside the particle.
+
+**The counts are checkable, and are checked.** The atop sites are the vertices
+of the surface polyhedron, the bridges its edges, the hollows and squares its
+faces — so Euler's formula must hold:
+
+| particle | V | E | F | V − E + F |
+| --- | ---: | ---: | ---: | ---: |
+| Pt₅₅ icosahedron | 42 | 120 | 80 | 2 |
+| Pt₁₄₇ icosahedron | 92 | 270 | 180 | 2 |
+| Pt₅₅ cuboctahedron | 42 | 96 | 56 | 2 |
+| Pt₁₄₇ cuboctahedron | 92 | 216 | 126 | 2 |
+
+An icosahedron is made of triangles and has **no square facet anywhere**, so it
+must have no four-fold sites; a cuboctahedron has six square facets and does.
+Building a four-fold site out of a triangle plus a fourth atom instead finds
+every rhombus of two adjacent triangles — which puts dozens of them on an
+icosahedron, and whose centres are over the shared edge, which is to say they
+are the bridge sites already found.
+
+### Symmetry reduction
+
+Two sites are equivalent when an adsorbate at one would see exactly what it
+sees at the other, so the invariant is the sorted list of distances from the
+site to every atom together with the site's kind. That needs no point group,
+and it works for a periodic slab as well as a cluster.
+
+On Pt₅₅ the 242 sites reduce to **6**: two kinds of atop site with
+multiplicities 12 and 30 — the icosahedron's twelve vertices and thirty edge
+atoms — two kinds of bridge, and two kinds of hollow with multiplicities 20 and
+60, the twenty being the centres of the icosahedron's own faces. A
+binding-energy scan is six calculations instead of 242.
+
+### Placing an adsorbate
+
+```python
+finder.place("OH", site)                      # O down, H pointing out
+finder.place("CO", site, binding_atom=1)      # bound through the oxygen
+finder.place(my_molecule, site, binding_atom=2, anchor=0)
+```
+
+The molecule is translated so `binding_atom` sits at the site and rotated so
+the rest of it points away from the surface. That is what "force the oxygen to
+point at the platinum" has to mean on a curved particle, where every facet
+points somewhere different: on all six unique Pt₅₅ sites the O–H bond comes out
+along the site normal to within rounding, with the hydrogen further from the
+centre than the oxygen.
+
+`anchor` names the atom whose direction from the binding atom is aligned with
+the normal; the default uses the centroid of everything else, which is exactly
+the O→H direction for a hydroxyl.
+
+### Trajectories and coverage
+
+```python
+fa.write("h_sites.extxyz", finder.trajectory("H"))                  # 6 frames
+fa.write("h_all.extxyz", finder.trajectory("H", unique_only=False)) # 242
+
+hollows = finder.sites_of_type("hollow")
+series = finder.coverage_series("H", candidates=hollows, steps=10)
+theta = finder.coverage_fractions(candidates=hollows, steps=10)
+```
+
+A coverage series places each new adsorbate on the candidate **furthest from
+those already there**, so it spreads over the particle instead of filling one
+facet and leaving the rest bare. On Pt₅₅ the closest H–H distance falls
+monotonically from 12.76 Å at two adsorbates to 5.78 Å at ten — taking the
+sites in the order they were found gives a very different and much less useful
+set of structures at the same coverage.
+
+`python/examples/adsorption.py` runs the whole thing on Pt₅₅ and writes the
+four trajectories out.
+
 ## Constraints
 
 Constraints restrict how atoms may move, and everything that moves them obeys.
@@ -1122,6 +1234,74 @@ def rosenbrock(x):
 
 result, x = fa.BFGS(fmax=1e-6, alpha=1.0).minimize(rosenbrock, x0)
 ```
+
+## Global optimization
+
+A local optimizer answers *what is the nearest minimum*. Basin hopping answers
+*what is the lowest one*.
+
+```python
+search = fa.BasinHopping(steps=400, temperature=8000.0, step_size=0.45)
+result = search.run(cluster)
+
+print(result.best_energy)      # `cluster` now holds the best structure found
+```
+
+Every proposed structure is relaxed before its energy is looked at, which turns
+the basin around each minimum into a flat plateau and leaves a Metropolis walk
+with nothing to do but step between basins.
+
+### Does it work?
+
+The Lennard-Jones clusters are the standard test, because their global minima
+have been tabulated since the seventies. From random starts, with a fixed seed:
+
+| | start | found | published |
+| --- | ---: | ---: | ---: |
+| LJ₇ | −16.5054 | **−16.505384** | −16.505384 |
+| LJ₁₃ | −41.4720 | **−44.326801** | −44.326801 |
+| LJ₁₉ | −67.4733 | **−72.659782** | −72.659782 |
+
+For contrast, relaxing LJ₁₃ from six random starts with L-BFGS alone finds the
+global minimum **once**; the other five stop at −38.8, −41.5, −40.7, −40.1 and
+−40.7. That is the problem the algorithm exists for.
+
+### The pieces
+
+**Metropolis acceptance** on the relaxed energies: downhill is always taken,
+uphill with probability `exp(-ΔE/kT)`. The temperature is not physical — it
+sets how willing the walk is to accept a worse minimum, and the useful range is
+whatever puts the acceptance ratio near a half. At `temperature=0` nothing
+uphill is ever accepted, which the tests assert.
+
+**The best is kept apart from the walker.** The walk is allowed to go uphill
+and often should; the answer is the lowest structure it *ever saw*, not where
+it stopped. `run` leaves the structure holding that best, and `result.history`
+records both so the difference is visible.
+
+**Four moves.** `cartesian` displaces every atom, `single` displaces one,
+`twist` turns half the cluster about a random axis — which rearranges the
+packing outright and shakes a cluster out of a funnel that independent
+displacements cannot — and `exchange` swaps two atoms of different species, for
+alloys where the shape may already be right and the ordering wrong. `mixed`
+picks among them each step. All of them go through `move_to`, so a frozen
+substrate stays frozen under a Monte Carlo move as much as under a relaxation.
+
+**An adaptive step size.** A step too small never leaves the basin and one too
+large is always rejected; both waste a relaxation. The size is scaled towards
+whatever gives `target_acceptance`, clamped to within two orders of magnitude
+of what was asked for.
+
+**Any local optimizer.** `optimizer="fire"` or `"bfgs"` or any other registered
+name, with its own `fmax` and `max_steps`.
+
+One detail worth knowing: reaching the same minimum twice by different
+relaxation paths gives energies differing in the last bits, and counting those
+as discoveries both miscounts them and stops `stall_limit` from ever firing.
+`improvement_tolerance` (1 neV by default) governs what is *called* an
+improvement; the lowest structure is still kept whenever it is strictly lower.
+
+`python/examples/basin_hopping.py` runs all of this.
 
 ## Molecular dynamics
 
@@ -2288,7 +2468,7 @@ const double mlip_energy = deck.atoms.get_potential_energy();
 
 ## Testing
 
-`ctest` runs twenty-one C++ suites and the Python suite. The neighbour list is
+`ctest` runs twenty-three C++ suites and the Python suite. The neighbour list is
 checked against a brute-force O(N² × images) reference for cubic, triclinic,
 slab, isolated and smaller-than-cutoff cells; the minimum-image convention is
 checked the same way.
@@ -2352,6 +2532,40 @@ parallel component, and the test counts them. The springs must push along the
 path and nowhere else on a deliberately bunched band, the tangent must be a
 unit vector pointing towards the higher neighbour, and a symmetric barrier must
 relax to a symmetric profile.
+
+Basin hopping is checked against the Lennard-Jones clusters, whose global
+minima have been tabulated for fifty years: LJ₇, LJ₁₃ and LJ₁₉ have to come out
+at −16.505384, −44.326801 and −72.659782 from random starts, and they do, to
+six decimals. The rest of the algorithm is checked as behaviour rather than as
+outcome — at zero temperature the walk must never go uphill, a hotter search
+must accept more than a colder one, the recorded best must only ever fall and
+must never exceed the current state, an exchange must permute the species
+without moving any position, and the same seed must reproduce the run exactly.
+
+That last set caught a real problem. Reaching the same minimum by two different
+relaxation paths gives energies that differ in the last bits, and treating that
+as a discovery reported seven separate "improvements" that were all the same
+structure — and, worse, reset the stall counter every time, so a search that
+had plainly converged would never stop.
+
+The adsorption module is checked against Euler's formula. The sites it finds
+on a closed particle are the vertices, edges and faces of a polyhedron, so
+`V - E + F` must be two — and it is, for icosahedra and cuboctahedra of two and
+three shells alike. Almost nothing that is wrong with a site search leaves that
+true: inventing a face, missing an edge or placing a site inside the particle
+all break it. The symmetry reduction has to reproduce the icosahedron's own
+counts, 12 vertices and 30 edge atoms and 20 face-centre hollows, and the
+hydroxyl has to come out with its O–H bond along the normal at every one of the
+six distinct sites.
+
+Two bugs surfaced there. Four-fold sites were being built from a triangle plus
+a fourth atom, which finds every rhombus of two adjacent triangles and put
+sixty-two square sites on a shape with no square facet on it; and the same
+square was counted from both directions round, doubling the count on a
+cuboctahedron. Euler's formula caught both. The molecular orientation was also
+applying its rotation backwards — Rodrigues' formula gives the matrix for
+column vectors and positions here are rows — which laid the hydroxyl down
+instead of standing it up.
 
 The electronic structure module is checked against the free electron gas,
 whose density of states is `4π√E` in closed form and whose integral is

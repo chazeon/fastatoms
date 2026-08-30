@@ -261,6 +261,10 @@ void bind_symmetry(py::module_& m, py::class_<Atoms>& atoms);
 void bind_analysis(py::module_& m);
 /// Band structures and densities of state.
 void bind_electronic(py::module_& m);
+/// Adsorption sites, in their own submodule.
+void bind_adsorption(py::module_& m);
+/// Global optimization: basin hopping.
+void bind_globalopt(py::module_& m);
 
 /// Convert a Python property specification - a `Property`, a string, or a
 /// sequence of either - into the C++ list. `None` means the default set.

@@ -96,6 +96,10 @@ water_opt.yaml
 water-spce.xyz
 neb_argon_band.extxyz
 band.extxyz
+pt55_H_unique.extxyz
+pt55_H_all.extxyz
+pt55_OH_unique.extxyz
+pt55_H_coverage.extxyz
 *.traj
 
 # Agent working notes (local only)

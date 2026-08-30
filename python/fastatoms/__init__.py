@@ -148,6 +148,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ._core import adsorption
 from ._core import analysis
 from ._core import build
 from ._core import electronic
@@ -160,6 +161,8 @@ from ._core import (
     CalculatorError,
     CalculatorParameters,
     BandParameters,
+    AdsorptionError,
+    GlobalOptimizationError,
     AnalysisError,
     ElectronicError,
     BuildError,
@@ -168,6 +171,9 @@ from ._core import (
     CHGNet,
     Cell,
     BFGS,
+    BasinHopping,
+    BasinHoppingResult,
+    BasinHoppingStep,
     CG,
     Allegro,
     AutoNEB,
@@ -323,11 +329,15 @@ from ._core import (
 )
 
 __all__ = [
+    "adsorption",
     "analysis",
     "build",
     "electronic",
     "symmetry",
     "BFGS",
+    "BasinHopping",
+    "BasinHoppingResult",
+    "BasinHoppingStep",
     "CG",
     "LBFGS",
     "Allegro",
@@ -344,6 +354,8 @@ __all__ = [
     "CalculatorError",
     "CalculatorParameters",
     "BandParameters",
+    "AdsorptionError",
+    "GlobalOptimizationError",
     "AnalysisError",
     "ElectronicError",
     "BuildError",

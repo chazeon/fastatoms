@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(FastAtoms
-    VERSION 0.2.1
+    VERSION 0.2.2
     DESCRIPTION "High-performance C++ core for atomistic simulations, driven from Python"
     LANGUAGES CXX)
 
@@ -66,6 +66,8 @@ set(FASTATOMS_CORE_SOURCES
     src/electronic/bandpath.cpp
     src/electronic/bands.cpp
     src/electronic/dos.cpp
+    src/adsorption/sites.cpp
+    src/globalopt/basin_hopping.cpp
     src/analysis/rdf.cpp
     src/analysis/structure_factor.cpp
     src/analysis/surface_tension.cpp
@@ -139,6 +141,8 @@ set(FASTATOMS_PUBLIC_HEADERS
     include/fastatoms/electronic/bandpath.hpp
     include/fastatoms/electronic/bands.hpp
     include/fastatoms/electronic/dos.hpp
+    include/fastatoms/adsorption/sites.hpp
+    include/fastatoms/globalopt/basin_hopping.hpp
     include/fastatoms/analysis/rdf.hpp
     include/fastatoms/analysis/structure_factor.hpp
     include/fastatoms/analysis/surface_tension.hpp

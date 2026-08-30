@@ -56,6 +56,12 @@ it re-exports everything here alongside a few pure-Python conveniences.
     static auto* const electronic_error =
         new py::exception<fastatoms::electronic::ElectronicError>(m, "ElectronicError",
                                                                   PyExc_ValueError);
+    static auto* const adsorption_error =
+        new py::exception<fastatoms::adsorption::AdsorptionError>(m, "AdsorptionError",
+                                                                  PyExc_ValueError);
+    static auto* const global_error =
+        new py::exception<fastatoms::globalopt::GlobalOptimizationError>(
+            m, "GlobalOptimizationError", PyExc_RuntimeError);
     py::register_exception_translator([](std::exception_ptr p) {
         try {
             if (p) {
@@ -81,6 +87,10 @@ it re-exports everything here alongside a few pure-Python conveniences.
             py::set_error(*analysis_error, e.what());
         } catch (const fastatoms::electronic::ElectronicError& e) {
             py::set_error(*electronic_error, e.what());
+        } catch (const fastatoms::adsorption::AdsorptionError& e) {
+            py::set_error(*adsorption_error, e.what());
+        } catch (const fastatoms::globalopt::GlobalOptimizationError& e) {
+            py::set_error(*global_error, e.what());
         }
     });
 
@@ -98,6 +108,8 @@ it re-exports everything here alongside a few pure-Python conveniences.
     fastatoms::bindings::bind_symmetry(m, atoms_class);
     fastatoms::bindings::bind_analysis(m);
     fastatoms::bindings::bind_electronic(m);
+    fastatoms::bindings::bind_adsorption(m);
+    fastatoms::bindings::bind_globalopt(m);
     fastatoms::bindings::bind_optimize(m, atoms_class, deck_class);
     fastatoms::bindings::bind_md(m, atoms_class, deck_class);
     fastatoms::bindings::bind_phonon(m, deck_class);

@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "fastatoms"
-version = "0.2.1"
+version = "0.2.2"
 description = "High-performance C++ core for atomistic simulations, driven from Python"
 readme = "README.md"
 license = { file = "LICENSE" }
