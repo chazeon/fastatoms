@@ -5,7 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
-#include <sstream>
+#include <cstdio>
 #include <stdexcept>
 
 #include "fastatoms/core/elements.hpp"
@@ -107,18 +107,20 @@ void Atoms::clear() {
     numbers_.clear();
     positions_.clear();
     masses_.clear();
-    momenta_.clear();
+    velocities_.clear();
     charges_.clear();
     tags_.clear();
     extra_.clear();
+    extra_int_.clear();
+    extra_str_.clear();
 }
 
 void Atoms::resize_optional(std::size_t n) {
     if (!masses_.empty()) {
         masses_.resize(n, 0.0);
     }
-    if (!momenta_.empty()) {
-        momenta_.resize(3 * n, 0.0);
+    if (!velocities_.empty()) {
+        velocities_.resize(3 * n, 0.0);
     }
     if (!charges_.empty()) {
         charges_.resize(n, 0.0);
@@ -128,6 +130,19 @@ void Atoms::resize_optional(std::size_t n) {
     }
     for (auto& [name, array] : extra_) {
         array.data.resize(n * array.ncols, 0.0);
+    }
+    for (auto& [name, array] : extra_int_) {
+        array.data.resize(n * array.ncols, 0);
+    }
+    for (auto& [name, array] : extra_str_) {
+        // A new atom's label is its symbol, never empty (as in extend).
+        const std::size_t old_size = array.size();
+        array.resize(n);
+        if (name == "labels") {
+            for (std::size_t i = old_size; i < n && i < numbers_.size(); ++i) {
+                array[i] = std::string(symbol_from_number(numbers_[i]));
+            }
+        }
     }
 }
 
@@ -298,54 +313,46 @@ void Atoms::set_masses(const std::vector<double>& masses) {
 }
 
 std::vector<double> Atoms::momenta() const {
-    return momenta_.empty() ? std::vector<double>(3 * size(), 0.0) : momenta_;
-}
-
-void Atoms::set_momenta(const std::vector<double>& momenta) {
-    if (momenta.empty()) {
-        momenta_.clear();
-        return;
-    }
-    require_length("set_momenta", momenta.size(), 3 * size());
-    momenta_ = momenta;
-    // Velocities are constrained on the way in, the mirror of forces being
-    // constrained on the way out of `get_forces`. Between the two, every
-    // thermostat, barostat, integrator and velocity initialiser respects the
-    // constraints without having to know they exist - and a frozen atom given
-    // a velocity by a Maxwell-Boltzmann draw does not quietly wander off.
-    adjust_momenta(momenta_);
-}
-
-std::vector<double> Atoms::velocities() const {
-    const std::size_t n = size();
-    std::vector<double> out(3 * n, 0.0);
-    if (momenta_.empty()) {
+    std::vector<double> out(3 * size(), 0.0);
+    if (velocities_.empty()) {
         return out;
     }
-    for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < size(); ++i) {
         const double m = mass(i);
-        const double inv = m > 0.0 ? 1.0 / m : 0.0;
         for (std::size_t k = 0; k < 3; ++k) {
-            out[3 * i + k] = momenta_[3 * i + k] * inv;
+            out[3 * i + k] = velocities_[3 * i + k] * m;
         }
     }
     return out;
 }
 
+void Atoms::set_momenta(const std::vector<double>& momenta) {
+    if (momenta.empty()) {
+        velocities_.clear();
+        return;
+    }
+    require_length("set_momenta", momenta.size(), 3 * size());
+    velocities_.resize(3 * size());
+    for (std::size_t i = 0; i < size(); ++i) {
+        const double m = mass(i);
+        const double inv = m > 0.0 ? 1.0 / m : 0.0;
+        for (std::size_t k = 0; k < 3; ++k) {
+            velocities_[3 * i + k] = momenta[3 * i + k] * inv;
+        }
+    }
+}
+
+std::vector<double> Atoms::velocities() const {
+    return velocities_.empty() ? std::vector<double>(3 * size(), 0.0) : velocities_;
+}
+
 void Atoms::set_velocities(const std::vector<double>& velocities) {
     if (velocities.empty()) {
-        momenta_.clear();
+        velocities_.clear();
         return;
     }
     require_length("set_velocities", velocities.size(), 3 * size());
-    momenta_.resize(3 * size());
-    for (std::size_t i = 0; i < size(); ++i) {
-        const double m = mass(i);
-        for (std::size_t k = 0; k < 3; ++k) {
-            momenta_[3 * i + k] = velocities[3 * i + k] * m;
-        }
-    }
-    adjust_momenta(momenta_);
+    velocities_ = velocities;
 }
 
 std::vector<int> Atoms::tags() const {
@@ -412,6 +419,69 @@ std::vector<std::string> Atoms::array_names() const {
         names.push_back(name);
     }
     return names;
+}
+
+void Atoms::set_int_array(const std::string& name, const std::vector<std::int64_t>& data,
+                          std::size_t ncols) {
+    if (ncols == 0) {
+        throw std::invalid_argument("set_int_array: ncols must be at least 1");
+    }
+    require_length(("set_int_array('" + name + "')").c_str(), data.size(), size() * ncols);
+    extra_int_[name] = IntArray{data, ncols};
+}
+
+bool Atoms::has_int_array(const std::string& name) const { return extra_int_.count(name) != 0; }
+
+const Atoms::IntArray& Atoms::int_array(const std::string& name) const {
+    const auto it = extra_int_.find(name);
+    if (it == extra_int_.end()) {
+        throw std::out_of_range("no per-atom integer array named '" + name + "'");
+    }
+    return it->second;
+}
+
+void Atoms::remove_int_array(const std::string& name) { extra_int_.erase(name); }
+
+std::vector<std::string> Atoms::int_array_names() const {
+    std::vector<std::string> names;
+    names.reserve(extra_int_.size());
+    for (const auto& [name, array] : extra_int_) {
+        names.push_back(name);
+    }
+    return names;
+}
+
+void Atoms::set_string_array(const std::string& name, const std::vector<std::string>& data) {
+    require_length(("set_string_array('" + name + "')").c_str(), data.size(), size());
+    extra_str_[name] = data;
+}
+
+bool Atoms::has_string_array(const std::string& name) const {
+    return extra_str_.count(name) != 0;
+}
+
+const std::vector<std::string>& Atoms::string_array(const std::string& name) const {
+    const auto it = extra_str_.find(name);
+    if (it == extra_str_.end()) {
+        throw std::out_of_range("no per-atom string array named '" + name + "'");
+    }
+    return it->second;
+}
+
+void Atoms::remove_string_array(const std::string& name) { extra_str_.erase(name); }
+
+std::vector<std::string> Atoms::string_array_names() const {
+    std::vector<std::string> names;
+    names.reserve(extra_str_.size());
+    for (const auto& [name, array] : extra_str_) {
+        names.push_back(name);
+    }
+    return names;
+}
+
+std::vector<std::string> Atoms::labels() const {
+    const auto it = extra_str_.find("labels");
+    return it != extra_str_.end() ? it->second : symbols();
 }
 
 Vec3 Atoms::distance_vector(std::size_t i, std::size_t j, bool mic) const {
@@ -524,10 +594,10 @@ void Atoms::rotate(double angle, const Vec3& axis, const Vec3& center) {
     for (std::size_t i = 0; i < size(); ++i) {
         set_position(i, (position(i) - center) * R + center);
     }
-    if (!momenta_.empty()) {
+    if (!velocities_.empty()) {
         for (std::size_t i = 0; i < size(); ++i) {
-            const Vec3 p = Vec3::load(momenta_.data() + 3 * i) * R;
-            p.store(momenta_.data() + 3 * i);
+            const Vec3 v = Vec3::load(velocities_.data() + 3 * i) * R;
+            v.store(velocities_.data() + 3 * i);
         }
     }
 }
@@ -617,17 +687,13 @@ void Atoms::center(double vacuum, const std::array<bool, 3>& axes) {
 }
 
 double Atoms::kinetic_energy() const {
-    if (momenta_.empty()) {
+    if (velocities_.empty()) {
         return 0.0;
     }
     double total = 0.0;
     for (std::size_t i = 0; i < size(); ++i) {
         const double m = mass(i);
-        if (m <= 0.0) {
-            continue;
-        }
-        const Vec3 p = Vec3::load(momenta_.data() + 3 * i);
-        total += p.norm2() / m;
+        total += m * Vec3::load(velocities_.data() + 3 * i).norm2();
     }
     return 0.5 * total;
 }
@@ -642,17 +708,17 @@ double Atoms::temperature(int dof) const {
 
 Vec3 Atoms::total_momentum() const {
     Vec3 total{};
-    if (momenta_.empty()) {
+    if (velocities_.empty()) {
         return total;
     }
     for (std::size_t i = 0; i < size(); ++i) {
-        total += Vec3::load(momenta_.data() + 3 * i);
+        total += Vec3::load(velocities_.data() + 3 * i) * mass(i);
     }
     return total;
 }
 
 void Atoms::zero_center_of_mass_momentum() {
-    if (momenta_.empty() || empty()) {
+    if (velocities_.empty() || empty()) {
         return;
     }
     double total_mass = 0.0;
@@ -664,8 +730,8 @@ void Atoms::zero_center_of_mass_momentum() {
     }
     const Vec3 v_cm = total_momentum() / total_mass;
     for (std::size_t i = 0; i < size(); ++i) {
-        const Vec3 p = Vec3::load(momenta_.data() + 3 * i) - v_cm * mass(i);
-        p.store(momenta_.data() + 3 * i);
+        const Vec3 v = Vec3::load(velocities_.data() + 3 * i) - v_cm;
+        v.store(velocities_.data() + 3 * i);
     }
 }
 
@@ -686,6 +752,11 @@ void Atoms::append(const std::string& symbol, const Vec3& position) {
 }
 
 void Atoms::extend(const Atoms& other) {
+    if (&other == this) {
+        const Atoms copy = other;  // inserting a vector into itself is UB
+        extend(copy);
+        return;
+    }
     const std::size_t n_this = size();
     const std::size_t n_other = other.size();
     if (n_other == 0) {
@@ -703,7 +774,7 @@ void Atoms::extend(const Atoms& other) {
         mine.insert(mine.end(), theirs.begin(), theirs.end());
         masses_ = std::move(mine);
     }
-    merge_optional(momenta_, other.momenta_, n_this, n_other, 3, 0.0);
+    merge_optional(velocities_, other.velocities_, n_this, n_other, 3, 0.0);
     merge_optional(charges_, other.charges_, n_this, n_other, 1, 0.0);
     merge_optional(tags_, other.tags_, n_this, n_other, 1, 0);
 
@@ -725,6 +796,55 @@ void Atoms::extend(const Atoms& other) {
         merged.data.insert(merged.data.end(), array.data.begin(), array.data.end());
         extra_.emplace(name, std::move(merged));
     }
+
+    for (auto& [name, array] : extra_int_) {
+        const auto it = other.extra_int_.find(name);
+        if (it != other.extra_int_.end() && it->second.ncols == array.ncols) {
+            array.data.insert(array.data.end(), it->second.data.begin(), it->second.data.end());
+        } else {
+            array.data.resize(array.data.size() + n_other * array.ncols, 0);
+        }
+    }
+    for (const auto& [name, array] : other.extra_int_) {
+        if (extra_int_.count(name) != 0) {
+            continue;
+        }
+        IntArray merged;
+        merged.ncols = array.ncols;
+        merged.data.assign(n_this * array.ncols, 0);
+        merged.data.insert(merged.data.end(), array.data.begin(), array.data.end());
+        extra_int_.emplace(name, std::move(merged));
+    }
+
+    // A string array missing on one side is filled with that side's symbols
+    // for "labels" (so a label is never empty) and with "" otherwise.
+    std::vector<std::string> names = string_array_names();
+    for (const auto& name : other.string_array_names()) {
+        if (extra_str_.count(name) == 0) {
+            names.push_back(name);
+        }
+    }
+    for (const auto& name : names) {
+        auto fill = [&name](const Atoms& atoms, std::size_t begin, std::size_t count) {
+            std::vector<std::string> out;
+            out.reserve(count);
+            for (std::size_t i = begin; i < begin + count; ++i) {
+                out.push_back(name == "labels" ? atoms.symbol(i) : std::string{});
+            }
+            return out;
+        };
+        auto& mine = extra_str_[name];
+        if (mine.empty()) {
+            mine = fill(*this, 0, n_this);
+        }
+        const auto it = other.extra_str_.find(name);
+        if (it != other.extra_str_.end()) {
+            mine.insert(mine.end(), it->second.begin(), it->second.end());
+        } else {
+            const auto extra = fill(other, 0, n_other);
+            mine.insert(mine.end(), extra.begin(), extra.end());
+        }
+    }
 }
 
 Atoms Atoms::subset(const std::vector<std::size_t>& indices) const {
@@ -736,13 +856,21 @@ Atoms Atoms::subset(const std::vector<std::size_t>& indices) const {
     out.numbers_ = gather(numbers_, 1, indices);
     out.positions_ = gather(positions_, 3, indices);
     out.masses_ = gather(masses_, 1, indices);
-    out.momenta_ = gather(momenta_, 3, indices);
+    out.velocities_ = gather(velocities_, 3, indices);
     out.charges_ = gather(charges_, 1, indices);
     out.tags_ = gather(tags_, 1, indices);
     for (const auto& [name, array] : extra_) {
         out.extra_.emplace(name, Array{gather(array.data, array.ncols, indices), array.ncols});
     }
+    for (const auto& [name, array] : extra_int_) {
+        out.extra_int_.emplace(name,
+                               IntArray{gather(array.data, array.ncols, indices), array.ncols});
+    }
+    for (const auto& [name, array] : extra_str_) {
+        out.extra_str_.emplace(name, gather(array, 1, indices));
+    }
     out.cell_ = cell_;
+    out.info_ = info_;
     return out;
 }
 
@@ -808,12 +936,19 @@ Atoms Atoms::repeat(int nx, int ny, int nz) const {
     };
 
     out.masses_ = tile(masses_);
-    out.momenta_ = tile(momenta_);
+    out.velocities_ = tile(velocities_);
     out.charges_ = tile(charges_);
     out.tags_ = tile(tags_);
     for (const auto& [name, array] : extra_) {
         out.extra_.emplace(name, Array{tile(array.data), array.ncols});
     }
+    for (const auto& [name, array] : extra_int_) {
+        out.extra_int_.emplace(name, IntArray{tile(array.data), array.ncols});
+    }
+    for (const auto& [name, array] : extra_str_) {
+        out.extra_str_.emplace(name, tile(array));
+    }
+    out.info_ = info_;
 
     out.cell_ = cell_;
     out.cell_.set_matrix(Mat3::from_rows(m.row(0) * nx, m.row(1) * ny, m.row(2) * nz));
@@ -821,17 +956,17 @@ Atoms Atoms::repeat(int nx, int ny, int nz) const {
 }
 
 std::string Atoms::to_string() const {
-    std::ostringstream out;
-    out << "Atoms(" << formula() << ", n=" << size();
+    std::string out = "Atoms(" + formula() + ", n=" + std::to_string(size());
     if (!cell_.is_zero()) {
         const Vec3 l = cell_.lengths();
-        out.precision(4);
-        out << std::fixed << ", cell=[" << l.x << ", " << l.y << ", " << l.z << "]";
+        char buffer[96];
+        const int n = std::snprintf(buffer, sizeof buffer, ", cell=[%.4f, %.4f, %.4f]", l.x, l.y, l.z);
+        out.append(buffer, static_cast<std::size_t>(n));
     }
     const auto& p = cell_.pbc();
-    out << ", pbc=[" << (p[0] ? "True" : "False") << ", " << (p[1] ? "True" : "False") << ", "
-        << (p[2] ? "True" : "False") << "])";
-    return out.str();
+    out += std::string(", pbc=[") + (p[0] ? "True" : "False") + ", " + (p[1] ? "True" : "False") +
+           ", " + (p[2] ? "True" : "False") + "])";
+    return out;
 }
 
 }  // namespace fastatoms

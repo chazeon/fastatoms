@@ -2,88 +2,53 @@
 #pragma once
 
 /// \file pointgroup.hpp
-/// \brief The thirty-two crystallographic point groups, identified from a set
-///        of rotation matrices.
-///
-/// A rotation in a crystal is one of ten kinds, fixed by its determinant and
-/// trace: the identity, two-, three-, four- and six-fold rotations, and their
-/// improper partners - inversion, a mirror, and the three-, four- and six-fold
-/// rotoinversions. Counting how many of each a group contains identifies it
-/// among the thirty-two, and does so without reference to any particular
-/// basis, which is what makes it usable on a cell in an arbitrary setting.
+/// \brief Crystal systems, point groups and the error type of the symmetry
+///        module. The identification itself is done by spglib.
 
-#include <array>
 #include <stdexcept>
 #include <string>
-#include <vector>
-
-#include "fastatoms/core/vec3.hpp"
+#include <string_view>
 
 namespace fastatoms::symmetry {
 
-/// Raised for a structure or a group this module cannot make sense of.
+/// Raised when spglib cannot handle a structure, with its message attached.
 class SymmetryError : public std::runtime_error {
 public:
-    explicit SymmetryError(const std::string& message) : std::runtime_error(message) {}
+    using std::runtime_error::runtime_error;
 };
 
-/// The seven crystal systems.
-enum class CrystalSystem {
-    Triclinic,
-    Monoclinic,
-    Orthorhombic,
-    Tetragonal,
-    Trigonal,
-    Hexagonal,
-    Cubic,
-};
+enum class CrystalSystem { Triclinic, Monoclinic, Orthorhombic, Tetragonal, Trigonal, Hexagonal, Cubic };
 
-[[nodiscard]] std::string_view crystal_system_name(CrystalSystem system);
+[[nodiscard]] constexpr std::string_view crystal_system_name(CrystalSystem system) {
+    switch (system) {
+        case CrystalSystem::Triclinic: return "triclinic";
+        case CrystalSystem::Monoclinic: return "monoclinic";
+        case CrystalSystem::Orthorhombic: return "orthorhombic";
+        case CrystalSystem::Tetragonal: return "tetragonal";
+        case CrystalSystem::Trigonal: return "trigonal";
+        case CrystalSystem::Hexagonal: return "hexagonal";
+        case CrystalSystem::Cubic: return "cubic";
+    }
+    return "";
+}
 
-/// What one rotation matrix is, geometrically.
-///
-/// The value is the conventional order with a sign: `1`, `2`, `3`, `4`, `6`
-/// for proper rotations and `-1`, `-2` (a mirror), `-3`, `-4`, `-6` for
-/// improper ones. Determinant and trace between them fix it: no two of the ten
-/// share a pair.
-enum class RotationType { Identity, Two, Three, Four, Six, Inversion, Mirror, BarThree,
-                          BarFour, BarSix };
+/// The crystal system of an International Tables space-group number (1..230).
+[[nodiscard]] constexpr CrystalSystem crystal_system_of(int number) {
+    if (number <= 2) return CrystalSystem::Triclinic;
+    if (number <= 15) return CrystalSystem::Monoclinic;
+    if (number <= 74) return CrystalSystem::Orthorhombic;
+    if (number <= 142) return CrystalSystem::Tetragonal;
+    if (number <= 167) return CrystalSystem::Trigonal;
+    if (number <= 194) return CrystalSystem::Hexagonal;
+    return CrystalSystem::Cubic;
+}
 
-[[nodiscard]] RotationType classify_rotation(const Mat3& rotation);
-[[nodiscard]] int rotation_order(RotationType type);
-[[nodiscard]] std::string_view rotation_type_name(RotationType type);
-
-/// How many of each kind a group contains, in the order of `RotationType`.
-using RotationCounts = std::array<int, 10>;
-
-[[nodiscard]] RotationCounts count_rotations(const std::vector<Mat3>& rotations);
-
-/// One of the thirty-two crystallographic point groups.
+/// One of the 32 crystallographic point groups.
 struct PointGroup {
-    /// The Hermann-Mauguin symbol, e.g. "4/mmm".
-    std::string symbol;
-    /// The Schoenflies symbol, e.g. "D4h".
-    std::string schoenflies;
-    int order{1};
+    std::string symbol{"1"};       ///< Hermann-Mauguin, in spglib's notation, e.g. "m-3m"
+    std::string schoenflies{"C1"}; ///< e.g. "Oh"
+    int order{1};                  ///< number of distinct rotations
     CrystalSystem system{CrystalSystem::Triclinic};
-    bool centrosymmetric{false};
-    /// True when the group contains no improper operation, so a structure with
-    /// it can be chiral.
-    bool enantiomorphic{false};
-
-    [[nodiscard]] std::string to_string() const;
 };
-
-/// Identify a set of rotations as one of the thirty-two.
-///
-/// The rotations need not be in any particular basis, and duplicates are
-/// ignored.
-///
-/// \throws SymmetryError if the counts match none of the thirty-two, which
-///         means the input was not a crystallographic point group.
-[[nodiscard]] PointGroup identify_point_group(const std::vector<Mat3>& rotations);
-
-/// All thirty-two, for tests and for listing.
-[[nodiscard]] const std::vector<PointGroup>& crystallographic_point_groups();
 
 }  // namespace fastatoms::symmetry

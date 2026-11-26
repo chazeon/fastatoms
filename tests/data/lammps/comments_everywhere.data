@@ -1,0 +1,32 @@
+Comments everywhere   # trailing comment on the title line
+
+# a full-line comment in the header
+3 atoms   # three of them
+2 atom types
+
+# box
+0 4 xlo xhi   # x
+0 4 ylo yhi
+0 4 zlo zhi
+0 0 0 xy xz yz   # no tilt
+
+# masses
+Masses   # section comment
+
+1 1.008 # H
+2 15.999 # O
+
+Atoms # atomic   # style comment
+
+# id type x y z
+1 1 0.5 0.5 0.5   # first
+# between rows
+
+2 2 1.5 1.5 1.5
+3 1 2.5 2.5 2.5 # last
+
+Velocities
+
+1 0 0 0 # zero
+2 1 0 0
+3 0 0 1

@@ -146,6 +146,60 @@ int number_from_symbol(std::string_view symbol) {
     return z;
 }
 
+int try_number_from_label(std::string_view label) noexcept {
+    // Trim surrounding blanks.
+    while (!label.empty() && std::isspace(static_cast<unsigned char>(label.front()))) {
+        label.remove_prefix(1);
+    }
+    while (!label.empty() && std::isspace(static_cast<unsigned char>(label.back()))) {
+        label.remove_suffix(1);
+    }
+    if (const int z = try_number_from_symbol(label); z >= 0) {
+        return z;
+    }
+    if (const auto cut = label.find_first_of("/_"); cut != std::string_view::npos) {
+        label = label.substr(0, cut);
+    }
+    std::size_t letters = 0;
+    while (letters < label.size() && std::isalpha(static_cast<unsigned char>(label[letters]))) {
+        ++letters;
+    }
+    // A run of three or more letters is a word ("Carbon", "Cubic",
+    // "species"), not a decorated symbol; matching its prefix would turn
+    // "Sodium" into S.
+    if (letters == 0 || letters > 2) {
+        return -1;
+    }
+    const auto is_lower = [](char c) { return std::islower(static_cast<unsigned char>(c)) != 0; };
+    const auto is_upper = [](char c) { return std::isupper(static_cast<unsigned char>(c)) != 0; };
+    if (letters >= 2 && is_lower(label[1])) {
+        if (const int z = try_number_from_symbol(label.substr(0, 2)); z >= 0) {
+            return z;
+        }
+    }
+    const int one = try_number_from_symbol(label.substr(0, 1));
+    if (one >= 0) {
+        return one;
+    }
+    // Deuterium and tritium are hydrogen; the label keeps the isotope.
+    if (label[0] == 'D' || label[0] == 'T') {
+        return 1;
+    }
+    if (letters >= 2 && is_upper(label[0]) && is_upper(label[1])) {
+        return try_number_from_symbol(label.substr(0, 2));
+    }
+    return -1;
+}
+
+int number_from_label(std::string_view label) {
+    const int z = try_number_from_label(label);
+    if (z < 0) {
+        throw std::invalid_argument("cannot tell which element the species label '" +
+                                    std::string(label) + "' names");
+    }
+    return z;
+}
+
 double atomic_mass(int z) {
     check_range(z);
     return kElements[static_cast<std::size_t>(z)].mass;

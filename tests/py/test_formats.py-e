@@ -1,0 +1,83 @@
+"""Every fixture under tests/data/<format>/ against ase.io.read."""
+
+from __future__ import annotations
+
+import fastatoms
+import pytest
+from _util import (
+    FORMAT_DIRS,
+    assert_same_structure,
+    fixture_files,
+    require_format,
+)
+
+ase_io = pytest.importorskip("ase.io")
+
+_FIXTURES = fixture_files()
+_PARAMS = (
+    [pytest.param(d, f, p, id=f"{d}/{p.name}") for d, f, p in _FIXTURES]
+    if _FIXTURES
+    else [
+        pytest.param(
+            None,
+            None,
+            None,
+            marks=pytest.mark.skip(reason="no fixtures under tests/data/<format>/"),
+            id="no-fixtures",
+        )
+    ]
+)
+
+
+@pytest.mark.parametrize("directory,fmt,path", _PARAMS)
+def test_fixture_matches_ase(directory, fmt, path):
+    require_format(fmt)
+    _, ase_fmt = FORMAT_DIRS[directory]
+    text = path.read_text()
+
+    frames = fastatoms.read_all(text, fmt)
+    assert frames, "fastatoms read no frames"
+
+    try:
+        ase_frames = ase_io.read(path, index=":", format=ase_fmt)
+    except Exception as exc:  # ASE rejects some fixtures on purpose (e.g. VASP labels)
+        pytest.xfail(f"beyond ASE: ase.io.read raised {type(exc).__name__}: {exc}")
+    if not isinstance(ase_frames, list):
+        ase_frames = [ase_frames]
+
+    assert len(frames) == len(ase_frames), "frame count differs"
+    for index, (ours, theirs) in enumerate(zip(frames, ase_frames)):
+        assert_same_structure(ours, theirs)
+    # read() defaults to the last frame, like ASE; index selects explicitly.
+    assert_same_structure(fastatoms.read(text, fmt), ase_frames[-1])
+    assert_same_structure(fastatoms.read(text, fmt, index=0), ase_frames[0])
+
+
+@pytest.mark.parametrize(
+    "filename,fmt",
+    [
+        ("POSCAR", "vasp"),
+        ("CONTCAR", "vasp"),
+        ("structure.vasp", "vasp"),
+        ("structure.extxyz", "extxyz"),
+        ("structure.cif", "cif"),
+        ("structure.data", "lammps-data"),
+        ("structure.lammpstrj", "lammps-dump"),
+    ],
+)
+def test_guess_format_from_name(filename, fmt):
+    require_format(fmt)
+    assert fastatoms.guess_format(filename) == fmt
+
+
+def test_available_formats_and_can_write_are_consistent():
+    names = fastatoms.available_formats()
+    assert isinstance(names, list)
+    for name in names:
+        assert isinstance(fastatoms.can_write(name), bool)
+    assert not fastatoms.can_write("no-such-format")
+
+
+def test_unknown_format_is_rejected():
+    with pytest.raises(fastatoms.FormatError):
+        fastatoms.read_all("", "no-such-format")

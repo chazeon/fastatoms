@@ -1,0 +1,26 @@
+LAMMPS 2023 Atom Type Labels section
+
+3 atoms
+3 atom types
+
+0 10 xlo xhi
+0 10 ylo yhi
+0 10 zlo zhi
+
+Atom Type Labels
+
+1 Fe
+2 O
+3 Sodium
+
+Masses
+
+Fe 55.845
+O 15.999
+Sodium 22.99
+
+Atoms # atomic
+
+1 Fe 0 0 0
+2 O 1 1 1
+3 Sodium 2 2 2

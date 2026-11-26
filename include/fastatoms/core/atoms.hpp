@@ -4,20 +4,18 @@
 /// \file atoms.hpp
 /// \brief The central `Atoms` container.
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <map>
-#include <memory>
 #include <string>
 #include <vector>
 
 #include "fastatoms/core/cell.hpp"
-#include "fastatoms/core/constraints.hpp"
-#include "fastatoms/io/parameters.hpp"
+#include "fastatoms/core/value.hpp"
 #include "fastatoms/core/vec3.hpp"
 
 namespace fastatoms {
-
-class Calculator;
 
 /// A collection of atoms in an optionally periodic cell.
 ///
@@ -34,6 +32,13 @@ public:
     /// One extra per-atom array of doubles, with `ncols` components per atom.
     struct Array {
         std::vector<double> data;
+        std::size_t ncols{1};
+    };
+
+    /// One extra per-atom array of integers (LAMMPS `type`/`id`, image flags,
+    /// selective-dynamics flags), with `ncols` components per atom.
+    struct IntArray {
+        std::vector<std::int64_t> data;
         std::size_t ncols{1};
     };
 
@@ -124,14 +129,18 @@ public:
     void set_masses(const std::vector<double>& masses);
     [[nodiscard]] double mass(std::size_t i) const;
 
-    [[nodiscard]] bool has_momenta() const noexcept { return !momenta_.empty(); }
-    /// Momenta in amu*angstrom/(internal time unit); zeros when unset.
-    [[nodiscard]] std::vector<double> momenta() const;
-    void set_momenta(const std::vector<double>& momenta);
-
-    /// Velocities are momenta divided by mass.
+    /// Velocities are what is stored, verbatim, so a file's velocities
+    /// round-trip bit-exactly and survive massless (dummy) atoms. Momenta are
+    /// derived: p = m v. Units are whatever the source used.
+    [[nodiscard]] bool has_velocities() const noexcept { return !velocities_.empty(); }
+    [[nodiscard]] bool has_momenta() const noexcept { return has_velocities(); }
+    /// Zeros when unset.
     [[nodiscard]] std::vector<double> velocities() const;
     void set_velocities(const std::vector<double>& velocities);
+    /// m v; zeros when unset.
+    [[nodiscard]] std::vector<double> momenta() const;
+    /// Stored as p / m (zero velocity for a massless atom).
+    void set_momenta(const std::vector<double>& momenta);
 
     [[nodiscard]] bool has_tags() const noexcept { return !tags_.empty(); }
     [[nodiscard]] std::vector<int> tags() const;
@@ -150,6 +159,27 @@ public:
     [[nodiscard]] const Array& array(const std::string& name) const;
     void remove_array(const std::string& name);
     [[nodiscard]] std::vector<std::string> array_names() const;
+
+    /// Integer per-atom arrays, a separate namespace from the double arrays.
+    void set_int_array(const std::string& name, const std::vector<std::int64_t>& data,
+                       std::size_t ncols = 1);
+    [[nodiscard]] bool has_int_array(const std::string& name) const;
+    /// \throws std::out_of_range if the array does not exist.
+    [[nodiscard]] const IntArray& int_array(const std::string& name) const;
+    void remove_int_array(const std::string& name);
+    [[nodiscard]] std::vector<std::string> int_array_names() const;
+
+    /// String per-atom arrays, one string per atom. The species label a file
+    /// gave each atom ("Fe1", "Fe_pv", "O2-") lives in "labels".
+    void set_string_array(const std::string& name, const std::vector<std::string>& data);
+    [[nodiscard]] bool has_string_array(const std::string& name) const;
+    /// \throws std::out_of_range if the array does not exist.
+    [[nodiscard]] const std::vector<std::string>& string_array(const std::string& name) const;
+    void remove_string_array(const std::string& name);
+    [[nodiscard]] std::vector<std::string> string_array_names() const;
+
+    /// The "labels" string array, or the chemical symbols when there is none.
+    [[nodiscard]] std::vector<std::string> labels() const;
     /// @}
 
     /// \name Frame information
@@ -239,77 +269,6 @@ public:
     [[nodiscard]] Atoms repeat(int nx, int ny, int nz) const;
     /// @}
 
-    /// \name Calculator
-    ///
-    /// Attaching a calculator lets the structure evaluate its own energy,
-    /// forces and stress. The calculator caches results and only re-runs the
-    /// underlying engine when the structure has actually changed.
-    ///
-    /// `subset`, `repeat` and the Python `copy()` deliberately do not carry the
-    /// calculator over, matching ASE; a plain C++ copy shares it.
-    /// @{
-    void set_calculator(std::shared_ptr<Calculator> calculator);
-    [[nodiscard]] const std::shared_ptr<Calculator>& calculator() const noexcept {
-        return calculator_;
-    }
-    [[nodiscard]] bool has_calculator() const noexcept { return calculator_ != nullptr; }
-
-    /// Potential energy in eV.
-    /// \throws CalculatorError if no calculator is attached.
-    [[nodiscard]] double get_potential_energy(bool force_consistent = false);
-
-    /// Forces in eV/angstrom, 3N atom-major. Also stored as the per-atom array
-    /// "forces".
-    [[nodiscard]] std::vector<double> get_forces();
-
-    /// Stress in eV/angstrom^3, Voigt order (xx, yy, zz, yz, xz, xy).
-    [[nodiscard]] std::array<double, 6> get_stress();
-    /// @}
-
-    /// \name Constraints
-    ///
-    /// Constraints restrict how the atoms may move, and every part of the
-    /// code that moves them respects the list attached here: `get_forces()`
-    /// returns forces with the forbidden components already projected out,
-    /// the optimizers project each proposed step, the integrators project the
-    /// velocities too, and the nudged elastic band projects again after its
-    /// own tangent projection.
-    ///
-    /// A constraint is immutable once built, so copies of an `Atoms` share
-    /// theirs. Nothing can modify a constraint through one structure and
-    /// surprise another; to change one, attach a different one.
-    /// @{
-    /// \throws ConstraintError if a constraint names an atom that is not here.
-    void set_constraints(ConstraintList constraints);
-    void add_constraint(std::shared_ptr<Constraint> constraint);
-    void clear_constraints() noexcept { constraints_.clear(); }
-    [[nodiscard]] const ConstraintList& constraints() const noexcept { return constraints_; }
-    [[nodiscard]] bool has_constraints() const noexcept { return !constraints_.empty(); }
-
-    /// Project the forbidden components out of `forces` in place. Called for
-    /// you by `get_forces()`; call it yourself only on forces obtained some
-    /// other way.
-    void adjust_forces(std::vector<double>& forces) const;
-
-    /// Project a proposed set of positions onto what the constraints allow,
-    /// treating `reference` as where the atoms moved from.
-    void adjust_positions(const std::vector<double>& reference,
-                          std::vector<double>& positions) const;
-
-    /// As above for momenta or velocities.
-    void adjust_momenta(std::vector<double>& momenta) const;
-
-    /// Degrees of freedom the constraints remove, counted without
-    /// double-counting an atom that two of them name.
-    [[nodiscard]] int constrained_degrees_of_freedom() const;
-
-    /// Set the positions, projected onto what the constraints allow, using the
-    /// current positions as the reference. This is what an optimizer or an
-    /// integrator wants; `set_positions` itself stays unconstrained, because
-    /// building a structure is not a move.
-    void move_to(const std::vector<double>& positions);
-    /// @}
-
     /// One-line summary used by the Python `repr`.
     [[nodiscard]] std::string to_string() const;
 
@@ -323,16 +282,16 @@ private:
     std::vector<double> positions_;  ///< 3N, atom-major
 
     std::vector<double> masses_;   ///< empty or N
-    std::vector<double> momenta_;  ///< empty or 3N
+    std::vector<double> velocities_;  ///< empty or 3N
     std::vector<double> charges_;  ///< empty or N
     Value info_{};                 ///< per-frame scalars, e.g. energy
     std::vector<int> tags_;        ///< empty or N
 
     std::map<std::string, Array> extra_;
+    std::map<std::string, IntArray> extra_int_;
+    std::map<std::string, std::vector<std::string>> extra_str_;
 
     Cell cell_{};
-    std::shared_ptr<Calculator> calculator_{};
-    ConstraintList constraints_{};
 };
 
 }  // namespace fastatoms

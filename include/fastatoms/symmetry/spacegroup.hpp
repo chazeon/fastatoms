@@ -2,113 +2,92 @@
 #pragma once
 
 /// \file spacegroup.hpp
-/// \brief Determining the space group of a structure.
+/// \brief The symmetry dataset of a structure and the space group it implies.
 ///
-/// The Hermann-Mauguin symbol is *derived* here rather than matched against a
-/// stored list of operation sets: the crystal system fixes a set of symmetry
-/// directions, each direction is asked which axis and which plane it carries,
-/// and the symbol is assembled from the answers. That is how the symbol is
-/// defined, and it means a group this code has never seen still produces the
-/// right symbol. Only the last step - turning the symbol into the number
-/// between 1 and 230 that International Tables gives it - is a lookup, because
-/// that numbering is a convention and not something derivable.
+/// Everything here is computed by spglib. Conventions follow spglib:
+///  - `rotations` and `translations` act on fractional coordinates of the input
+///    cell as x' = R x + t, with R an integer matrix in that basis.
+///  - `transformation_matrix` P and `origin_shift` p map input to standard
+///    coordinates, x_s = P x + p, as spglib defines them.
+/// Lattices are the exception: they are returned with rows as lattice vectors,
+/// like every other cell in FastAtoms.
 ///
-/// Nothing here uses spglib or any other symmetry library.
+/// Labels: by default every atom is typed by its atomic number. With
+/// `use_labels` the type is the label (`Fe1`, `Fe2`, ...), so atoms of one
+/// element with different labels are treated as different sites.
 
+#include <array>
+#include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "fastatoms/core/atoms.hpp"
-#include "fastatoms/phonon/symmetry.hpp"
+#include "fastatoms/core/vec3.hpp"
 #include "fastatoms/symmetry/pointgroup.hpp"
-#include "fastatoms/symmetry/standardize.hpp"
 
 namespace fastatoms::symmetry {
 
-/// The operation types, re-exported here so that using this module does not
-/// require reaching into the phonon one, where the search happens to live.
-using SymmetryOperation = phonon::SymmetryOperation;
-using SymmetryDataset = phonon::SymmetryDataset;
-using phonon::find_symmetry;
-using phonon::lattice_point_group;
+using IntMatrix3 = std::array<std::array<int, 3>, 3>;
 
-/// One Wyckoff orbit: a set of atoms that symmetry ties together.
+/// Everything spglib knows about a structure, with the arrays laid out per
+/// atom and the lattices as rows.
+struct SymmetryDataset {
+    int number{0};                  ///< International Tables number, 1..230
+    std::string international;      ///< short Hermann-Mauguin symbol, e.g. "Fm-3m"
+    std::string hall;               ///< Hall symbol, e.g. "-F 4 2 3"
+    int hall_number{0};             ///< spglib's serial number, 1..530
+    std::string choice;             ///< origin / axis choice, e.g. "1" or "2"
+    PointGroup pointgroup;
+    CrystalSystem crystal_system{CrystalSystem::Triclinic};
+
+    std::vector<IntMatrix3> rotations;
+    std::vector<Vec3> translations;
+
+    std::vector<char> wyckoffs;     ///< one Wyckoff letter per input atom
+    std::vector<std::string> site_symmetry_symbols;  ///< one per input atom
+    std::vector<int> equivalent_atoms;               ///< input atom -> orbit representative
+    std::vector<int> crystallographic_orbits;
+
+    Mat3 std_lattice{};             ///< standardised conventional cell, rows
+    std::vector<int> std_types;
+    std::vector<Vec3> std_positions;  ///< fractional, in std_lattice
+    Mat3 transformation_matrix{};   ///< P
+    Vec3 origin_shift{};            ///< p
+
+    Mat3 primitive_lattice{};       ///< primitive cell, rows, input frame
+    std::vector<int> mapping_to_primitive;      ///< input atom -> primitive atom id
+    std::vector<int> std_mapping_to_primitive;  ///< standard atom -> primitive atom id
+};
+
+/// The full symmetry dataset of a structure.
+/// \param symprec  distance tolerance in angstrom
+/// \param angle_tolerance  angle tolerance in degrees, or negative for spglib's default
+/// \throws SymmetryError if the structure is empty, not periodic in all three
+///         directions, or spglib cannot find its symmetry.
+[[nodiscard]] SymmetryDataset get_symmetry_dataset(const Atoms& atoms, double symprec = 1e-5,
+                                                   double angle_tolerance = -1.0,
+                                                   bool use_labels = false);
+
+/// The atoms that one Wyckoff letter collects.
 struct WyckoffPosition {
-    /// The letter, assigned by increasing multiplicity as International Tables
-    /// does. Sites of equal multiplicity are ordered by site symmetry and then
-    /// by position, which reproduces the standard lettering for most groups
-    /// but is not looked up from the tables.
     char letter{'a'};
-
-    /// How many atoms are in the orbit, in the conventional cell.
-    int multiplicity{1};
-
-    /// The point group of the site, as a Hermann-Mauguin symbol: "1" for a
-    /// general position, "4mm" for an atom on a four-fold axis with mirrors.
     std::string site_symmetry{"1"};
-
-    /// The atoms of the orbit, as indices into `SpaceGroup::primitive`.
-    std::vector<std::size_t> atoms{};
-
-    /// One member's position, in fractional coordinates of the primitive cell.
-    Vec3 representative{};
-
-    [[nodiscard]] std::string to_string() const;
+    std::vector<std::size_t> atoms;  ///< indices into the input structure
 };
 
-/// Everything this module can say about a structure's symmetry.
+/// The space group of a structure, as the summary most callers want.
 struct SpaceGroup {
-    /// The International Tables number, 1 to 230. Zero when the derived symbol
-    /// is not one this build has a number for, which is a bug worth reporting
-    /// rather than something to work around.
     int number{0};
-
-    /// The short Hermann-Mauguin symbol, e.g. "Fd-3m".
-    std::string hermann_mauguin{};
-
-    /// The full symbol, with every direction written out: "P 4/m 2/m 2/m"
-    /// rather than "P4/mmm".
-    std::string hermann_mauguin_full{};
-
-    /// The Schoenflies symbol with its superscript, e.g. "Oh-7".
-    std::string schoenflies{};
-
-    PointGroup point_group{};
-    CrystalSystem system{CrystalSystem::Triclinic};
-    Centring centring{Centring::P};
-
-    /// The primitive cell the analysis was carried out on. When the structure
-    /// handed in was already primitive this is a copy of it; when it was a
-    /// conventional cell or a supercell it is the reduction. The operations
-    /// and the Wyckoff orbits below index this cell.
-    Atoms primitive{};
-
-    /// Every operation, in the basis of `primitive`.
-    std::vector<SymmetryOperation> operations{};
-
-    /// The orbits, ordered by increasing multiplicity.
-    std::vector<WyckoffPosition> wyckoff{};
-
-    /// Atoms in the primitive cell, and in the conventional one.
-    std::size_t primitive_atoms{0};
-    std::size_t conventional_atoms{0};
-
-    double tolerance{1e-5};
-
-    [[nodiscard]] std::size_t order() const noexcept { return operations.size(); }
-    [[nodiscard]] std::string to_string() const;
-    [[nodiscard]] std::string summary() const;
+    std::string international;
+    PointGroup pointgroup;
+    CrystalSystem crystal_system{CrystalSystem::Triclinic};
+    std::vector<WyckoffPosition> wyckoff;  ///< ordered by letter
 };
 
-/// Determine the space group of a structure.
-///
-/// \param tolerance distance in angstrom within which two atoms count as
-///        coincident. Too tight and real symmetry is missed; too loose and
-///        operations appear that are not there, which shows up as a point
-///        group that is not one of the thirty-two.
-/// \throws SymmetryError if the structure has no usable cell, or if the
-///         operations found do not form a crystallographic group.
-[[nodiscard]] SpaceGroup analyse(const Atoms& atoms, double tolerance = 1e-5);
+/// The space group of a structure. Same arguments as `get_symmetry_dataset`.
+[[nodiscard]] SpaceGroup analyse(const Atoms& atoms, double tolerance = 1e-5,
+                                 double angle_tolerance = -1.0, bool use_labels = false);
 
 /// The International Tables number for a short Hermann-Mauguin symbol, or zero
 /// if it is not one of the 230.
@@ -118,7 +97,7 @@ struct SpaceGroup {
 /// \throws SymmetryError if the number is out of range.
 [[nodiscard]] std::string space_group_symbol(int number);
 
-/// All 230, as (number, symbol) in order. For tests and for listing.
+/// All 230 as (number, short symbol), in order of number.
 [[nodiscard]] const std::vector<std::pair<int, std::string>>& space_group_table();
 
 }  // namespace fastatoms::symmetry

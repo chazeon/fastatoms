@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: MIT
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { init, formats, io, Atoms } from "../dist/index.js";
+import { readText, REPO_DATA, skipUnlessFile } from "./helpers.mjs";
+
+// Top-level await: `skip` options below are evaluated while the file loads.
+await init();
+
+const has = (name) => formats().includes(name);
+
+/** A small VASP 5 file: NaCl in a 5.64 A cubic cell. */
+const POSCAR = [
+  "NaCl",
+  "1.0",
+  "5.64 0 0",
+  "0 5.64 0",
+  "0 0 5.64",
+  "Na Cl",
+  "1 1",
+  "Direct",
+  "0 0 0",
+  "0.5 0.5 0.5",
+  "",
+].join("\n");
+
+/** Five single-atom frames whose x coordinate is the frame number. */
+function trajectory() {
+  const frames = [0, 1, 2, 3, 4].map((k) =>
+    Atoms.fromArrays({ symbols: ["H"], positions: [k, 0, 0], cell: [10, 0, 0, 0, 10, 0, 0, 0, 10], pbc: true }),
+  );
+  const text = io.write(frames, { format: "extxyz" });
+  frames.forEach((frame) => {
+    frame.dispose();
+  });
+  return text;
+}
+
+/** The x coordinate of each frame, in order. */
+function xs(frames) {
+  return frames.map((atoms) => atoms.getPositions()[0]);
+}
+
+test("io.read takes a string, Uint8Array and ArrayBuffer (UTF-8, BOM stripped)", { skip: !has("vasp") }, () => {
+  const bytes = new TextEncoder().encode(POSCAR);
+  const withBom = new Uint8Array([0xef, 0xbb, 0xbf, ...bytes]);
+  for (const input of [POSCAR, bytes, withBom, withBom.buffer]) {
+    const atoms = io.read(input, { format: "vasp" });
+    assert.equal(atoms.length, 2);
+    assert.deepEqual(atoms.getChemicalSymbols(), ["Na", "Cl"]);
+  }
+  assert.equal(io.read(`\uFEFF${POSCAR}`, { format: "vasp" }).length, 2, "BOM in a string");
+});
+
+test("io.read takes a Blob and a File; a File names itself for the format guess", { skip: !has("vasp") }, async () => {
+  const blob = new Blob([POSCAR]);
+  const fromBlob = await io.read(blob, { format: "vasp" });
+  assert.equal(fromBlob.length, 2);
+  const file = new File([POSCAR], "POSCAR");
+  const fromFile = await io.read(file);
+  assert.deepEqual(fromFile.getChemicalSymbols(), ["Na", "Cl"]);
+  assert.ok(fromFile instanceof Atoms, "a single frame by default");
+});
+
+test("a Blob or File gives a Promise, the other inputs do not", { skip: !has("vasp") }, () => {
+  assert.ok(io.read(POSCAR, { format: "vasp" }) instanceof Atoms);
+  assert.ok(io.read(new TextEncoder().encode(POSCAR), { format: "vasp" }) instanceof Atoms);
+  const pending = io.read(new Blob([POSCAR]), { format: "vasp" });
+  assert.ok(pending instanceof Promise);
+  return pending;
+});
+
+test("index: undefined is the last frame, negatives count from the end", { skip: !has("extxyz") }, () => {
+  const text = trajectory();
+  assert.deepEqual(xs([io.read(text, { format: "extxyz" })]), [4]);
+  assert.deepEqual(xs([io.read(text, { format: "extxyz", index: -1 })]), [4]);
+  assert.deepEqual(xs([io.read(text, { format: "extxyz", index: -2 })]), [3]);
+  assert.deepEqual(xs([io.read(text, { format: "extxyz", index: 0 })]), [0]);
+  assert.deepEqual(xs([io.read(text, { format: "extxyz", index: 2 })]), [2]);
+});
+
+test("index: a plain integer string gives one Atoms", { skip: !has("extxyz") }, () => {
+  const text = trajectory();
+  const one = io.read(text, { format: "extxyz", index: "2" });
+  assert.ok(one instanceof Atoms);
+  assert.deepEqual(xs([one]), [2]);
+  assert.deepEqual(xs([io.read(text, { format: "extxyz", index: "-1" })]), [4]);
+  assert.throws(() => io.read(text, { format: "extxyz", index: "two" }), /invalid index/);
+});
+
+test("index: slice strings give Atoms[] in ASE/Python order", { skip: !has("extxyz") }, () => {
+  const text = trajectory();
+  const every = (index) => io.read(text, { format: "extxyz", index });
+  const all = every(":");
+  assert.ok(Array.isArray(all));
+  assert.deepEqual(xs(all), [0, 1, 2, 3, 4]);
+  assert.deepEqual(xs(every("::2")), [0, 2, 4]);
+  assert.deepEqual(xs(every("-3:")), [2, 3, 4]);
+  assert.deepEqual(xs(every("1:5")), [1, 2, 3, 4]);
+  assert.deepEqual(xs(every("1:-1")), [1, 2, 3]);
+  assert.deepEqual(xs(every("::-1")), [4, 3, 2, 1, 0]);
+  assert.deepEqual(xs(every("10:")), []);
+  assert.throws(() => every("1:2:3:4"), /invalid index slice/);
+  assert.throws(() => every("::0"), /step/);
+});
+
+test("index: the Blob path honours the same rules", { skip: !has("extxyz") }, async () => {
+  const text = trajectory();
+  const frames = await io.read(new Blob([text]), { format: "extxyz", index: "-3:" });
+  assert.deepEqual(xs(frames), [2, 3, 4]);
+  const last = await io.read(new File([text], "traj.xyz"));
+  assert.deepEqual(xs([last]), [4]);
+});
+
+test("a gzipped Blob is inflated (CompressionStream made it) and read", { skip: !has("vasp") }, async () => {
+  const stream = new Blob([POSCAR]).stream().pipeThrough(new CompressionStream("gzip"));
+  const gz = new Uint8Array(await new Response(stream).arrayBuffer());
+  assert.deepEqual([gz[0], gz[1]], [0x1f, 0x8b], "fixture is gzip");
+
+  const file = new File([gz], "POSCAR.gz");
+  const atoms = await io.read(file);
+  assert.deepEqual(atoms.getChemicalSymbols(), ["Na", "Cl"], "format from POSCAR after .gz is stripped");
+
+  const named = await io.read(new Blob([gz]), { format: "vasp" });
+  assert.equal(named.length, 2);
+});
+
+test("gzipped bytes in a synchronous input are an error that says to use a Blob", { skip: !has("vasp") }, () => {
+  const gz = new Uint8Array([0x1f, 0x8b, 0x08, 0x00]);
+  assert.throws(() => io.read(gz, { format: "vasp" }), /Blob or File/);
+});
+
+test("format is guessed from the content when there is no filename", {
+  skip: !has("cif") || skipUnlessFile(`${REPO_DATA}/cif/nacl.cif`),
+}, () => {
+  const atoms = io.read(readText(`${REPO_DATA}/cif/nacl.cif`));
+  assert.ok(atoms.length > 0);
+});
+
+test("format is guessed from the filename, else an error names the file", { skip: !has("vasp") }, () => {
+  assert.equal(io.read(POSCAR, { filename: "CONTCAR" }).length, 2);
+  assert.throws(() => io.read("just some text\n", { filename: "notes.txt" }), /notes\.txt/);
+  assert.throws(() => io.read("just some text\n"), /cannot determine/);
+});
+
+test("io.read forwards format options and rejects unknown ones", { skip: !has("vasp") }, () => {
+  assert.throws(() => io.read(POSCAR, { format: "vasp", no_such_option: 1 }));
+});
+
+test("io.write returns text; a list needs a multi-frame format", { skip: !has("extxyz") }, () => {
+  const one = io.read(POSCAR, { format: "vasp" });
+  const text = io.write(one, { format: "extxyz" });
+  assert.equal(typeof text, "string");
+  assert.equal(io.read(text, { format: "extxyz" }).length, 2);
+
+  const list = io.read(trajectory(), { format: "extxyz", index: ":" });
+  const written = io.write(list, { format: "extxyz" });
+  assert.deepEqual(xs(io.read(written, { format: "extxyz", index: ":" })), [0, 1, 2, 3, 4]);
+
+  assert.throws(() => io.write(list, { format: "vasp" }), /one structure/);
+  assert.throws(() => io.write([], { format: "extxyz" }), /empty/);
+});
+
+test("io.write guesses the format from the filename, and needs one of the two", {
+  skip: !has("vasp") || !has("extxyz"),
+}, () => {
+  const atoms = io.read(POSCAR, { format: "vasp" });
+  assert.match(io.write(atoms, { filename: "CONTCAR" }), /Direct|Cartesian/);
+  assert.match(io.write(atoms, { filename: "out.xyz" }), /Na/);
+  assert.throws(() => io.write(atoms, {}), /format/);
+  assert.throws(() => io.write(atoms, { filename: "structure.unknown" }), /structure\.unknown|cannot determine/);
+  assert.throws(() => io.write(atoms, { filename: "out.extxyz.gz" }), /gzip/);
+});

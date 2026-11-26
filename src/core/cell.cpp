@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <sstream>
+#include <cstdio>
 #include <stdexcept>
 
 namespace fastatoms {
@@ -30,16 +30,25 @@ Cell Cell::from_parameters(double a, double b, double c, double alpha, double be
     if (a <= 0.0 || b <= 0.0 || c <= 0.0) {
         throw std::invalid_argument("Cell::from_parameters: lengths must be positive");
     }
-    const double ca = std::cos(alpha * kDegToRad);
-    const double cb = std::cos(beta * kDegToRad);
-    const double cg = std::cos(gamma * kDegToRad);
-    const double sg = std::sin(gamma * kDegToRad);
+    // Right angles are exact, as in ASE's cellpar_to_cell: cos(90 deg) in
+    // floating point is 6e-17, which would otherwise leave noise in every
+    // orthogonal cell and in everything written from it.
+    const auto cos_deg = [](double angle) {
+        return std::abs(std::abs(angle) - 90.0) < 1e-10 ? 0.0 : std::cos(angle * kDegToRad);
+    };
+    const double ca = cos_deg(alpha);
+    const double cb = cos_deg(beta);
+    const double cg = cos_deg(gamma);
+    const double sg = std::abs(std::abs(gamma) - 90.0) < 1e-10 ? 1.0 : std::sin(gamma * kDegToRad);
     if (std::abs(sg) < 1e-14) {
         throw std::invalid_argument("Cell::from_parameters: gamma must not be 0 or 180 degrees");
     }
 
     const double cx = cb;
-    const double cy = (ca - cb * cg) / sg;
+    double cy = (ca - cb * cg) / sg;
+    if (std::abs(cy) < 1e-15) {
+        cy = 0.0;
+    }
     const double cz2 = 1.0 - cx * cx - cy * cy;
     if (cz2 <= 0.0) {
         throw std::invalid_argument(
@@ -171,16 +180,19 @@ double Cell::maximum_unique_cutoff() const noexcept {
 }
 
 std::string Cell::to_string() const {
-    std::ostringstream out;
-    out.precision(6);
-    out << "Cell([";
+    const auto num = [](double v) {
+        char buffer[32];
+        const int n = std::snprintf(buffer, sizeof buffer, "%.6g", v);
+        return std::string(buffer, static_cast<std::size_t>(n));
+    };
+    std::string out = "Cell([";
     for (std::size_t r = 0; r < 3; ++r) {
         const Vec3 v = matrix_.row(r);
-        out << (r ? ", [" : "[") << v.x << ", " << v.y << ", " << v.z << "]";
+        out += (r ? ", [" : "[") + num(v.x) + ", " + num(v.y) + ", " + num(v.z) + "]";
     }
-    out << "], pbc=[" << (pbc_[0] ? "True" : "False") << ", " << (pbc_[1] ? "True" : "False")
-        << ", " << (pbc_[2] ? "True" : "False") << "])";
-    return out.str();
+    out += std::string("], pbc=[") + (pbc_[0] ? "True" : "False") + ", " +
+           (pbc_[1] ? "True" : "False") + ", " + (pbc_[2] ? "True" : "False") + "])";
+    return out;
 }
 
 }  // namespace fastatoms

@@ -2,531 +2,314 @@
 
 #include "fastatoms/symmetry/spacegroup.hpp"
 
+#include <spglib.h>
+
 #include <algorithm>
-#include <cmath>
+#include <cstddef>
 #include <map>
-#include <sstream>
+#include <memory>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "fastatoms/symmetry/standardize.hpp"
 
 namespace fastatoms::symmetry {
 namespace {
 
-double wrap01(double value) {
-    value -= std::floor(value);
-    return (value > 1.0 - 1e-9 || value < 1e-9) ? 0.0 : value;
+using DatasetPtr = std::unique_ptr<SpglibDataset, decltype(&spg_free_dataset)>;
+
+[[noreturn]] void fail(const char* what) {
+    throw SymmetryError(std::string(what) + ": " + spg_get_error_message(spg_get_error_code()));
 }
 
-/// The part of a translation that no choice of origin can remove.
-///
-/// Averaging `t` over the powers of `W` projects it onto the subspace `W`
-/// leaves alone, and that component is what makes a screw a screw and a glide
-/// a glide. The rest is the operation's location, which moves with the origin
-/// and says nothing about which space group this is.
-Vec3 intrinsic_translation(const Mat3& rotation, const Vec3& translation) {
-    int order = 1;
-    Mat3 power = rotation;
-    while (order < 6) {
-        bool identity = true;
-        for (std::size_t k = 0; k < 9; ++k) {
-            const double expected = (k % 4 == 0) ? 1.0 : 0.0;
-            if (std::abs(power.m[k] - expected) > 1e-6) {
-                identity = false;
-            }
-        }
-        if (identity) {
-            break;
-        }
-        power = power * rotation;
-        ++order;
-    }
-
-    Vec3 sum = translation;
-    Vec3 carried = translation;
-    Mat3 accumulated = rotation;
-    for (int k = 1; k < order; ++k) {
-        carried = carried * rotation;
-        sum = Vec3{sum.x + carried.x, sum.y + carried.y, sum.z + carried.z};
-        accumulated = accumulated * rotation;
-    }
-    return Vec3{sum.x / order, sum.y / order, sum.z / order};
-}
-
-/// The direction a rotation or rotoinversion turns about, in the same basis as
-/// the matrix, as the smallest integer vector.
-Vec3 axis_direction(const Mat3& rotation, RotationType type) {
-    Mat3 proper = rotation;
-    const int order = rotation_order(type);
-    if (order < 0) {
-        for (std::size_t k = 0; k < 9; ++k) {
-            proper.m[k] = -proper.m[k];   // -n turned into its proper partner
-        }
-    }
-    const int turns = std::abs(order) == 1 ? 1 : std::abs(order);
-
-    // Sum the powers: the result projects onto the invariant axis.
-    Mat3 projector = Mat3::identity();
-    Mat3 power = Mat3::identity();
-    for (int k = 1; k < turns; ++k) {
-        power = power * proper;
-        for (std::size_t c = 0; c < 9; ++c) {
-            projector.m[c] += power.m[c];
-        }
-    }
-    // Rows, not columns. Fractional coordinates are row vectors here, so an
-    // operation acts as `f -> f W` and its invariant direction is a *left*
-    // eigenvector. For a cubic lattice the matrices are symmetric and the
-    // distinction does not show; for a hexagonal one it puts the six-fold axis
-    // in the wrong place and the symbol comes out for a different group.
-    Vec3 best{0.0, 0.0, 0.0};
+/// spglib's lattices are column vectors: lattice[i][j] is component i of
+/// vector j. Ours are rows, so converting either way is a transpose.
+Mat3 from_spglib(const double (&lattice)[3][3]) {
+    Mat3 out;
     for (std::size_t r = 0; r < 3; ++r) {
-        const Vec3 row{projector(r, 0), projector(r, 1), projector(r, 2)};
-        if (row.norm() > best.norm()) {
-            best = row;
-        }
-    }
-    return best;
-}
-
-/// The order of the cyclic group one element generates.
-///
-/// A rotoinversion of odd order generates twice as much as its order suggests:
-/// -3 squares to a three-fold and cubes to the inversion, so it generates a
-/// group of six. That is why the cubic symbol is `m-3m` and not `m3m` - the
-/// slot names the generator of the axial subgroup, and along a body diagonal
-/// with an inversion present that generator is -3.
-int cyclic_order(int order) {
-    const int magnitude = std::abs(order);
-    if (order > 0) {
-        return magnitude;
-    }
-    return magnitude % 2 == 0 ? magnitude : 2 * magnitude;
-}
-
-/// True when two directions are parallel, either way round.
-bool parallel(const Vec3& a, const Vec3& b) {
-    if (a.norm() < 1e-9 || b.norm() < 1e-9) {
-        return false;
-    }
-    return cross(a, b).norm() < 1e-6 * a.norm() * b.norm();
-}
-
-/// The symmetry directions of each crystal system, in conventional
-/// coordinates: primary, secondary, tertiary. A direction stands for the whole
-/// family of equivalents, so only one representative of each is listed.
-struct Directions {
-    std::vector<Vec3> primary;
-    std::vector<Vec3> secondary;
-    std::vector<Vec3> tertiary;
-};
-
-Directions directions_for(CrystalSystem system) {
-    switch (system) {
-        case CrystalSystem::Triclinic:
-            return {};
-        case CrystalSystem::Monoclinic:
-            return {{Vec3{0, 1, 0}}, {}, {}};
-        case CrystalSystem::Orthorhombic:
-            return {{Vec3{1, 0, 0}}, {Vec3{0, 1, 0}}, {Vec3{0, 0, 1}}};
-        case CrystalSystem::Tetragonal:
-            return {{Vec3{0, 0, 1}}, {Vec3{1, 0, 0}, Vec3{0, 1, 0}},
-                    {Vec3{1, 1, 0}, Vec3{1, -1, 0}}};
-        case CrystalSystem::Trigonal:
-        case CrystalSystem::Hexagonal:
-            return {{Vec3{0, 0, 1}},
-                    {Vec3{1, 0, 0}, Vec3{0, 1, 0}, Vec3{-1, -1, 0}},
-                    {Vec3{1, -1, 0}, Vec3{1, 2, 0}, Vec3{-2, -1, 0}}};
-        case CrystalSystem::Cubic:
-            return {{Vec3{1, 0, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1}},
-                    {Vec3{1, 1, 1}, Vec3{1, -1, -1}, Vec3{-1, 1, -1}, Vec3{-1, -1, 1}},
-                    {Vec3{1, 1, 0}, Vec3{1, -1, 0}, Vec3{0, 1, 1}, Vec3{0, 1, -1},
-                     Vec3{1, 0, 1}, Vec3{-1, 0, 1}}};
-    }
-    return {};
-}
-
-/// What one direction carries.
-struct DirectionSymbols {
-    std::string axis;    ///< "4", "6_3", "-3", or empty
-    std::string plane;   ///< "m", "c", "n", "d", "e", or empty
-    int axis_order{0};   ///< for ordering; negative for rotoinversions
-};
-
-/// The screw index of a rotation of order `n` about `direction`.
-///
-/// The intrinsic translation of a screw is a fraction `s/n` of the lattice
-/// repeat along the axis, and `s` is what the subscript in `4_1` or `6_3` is.
-int screw_index(const Vec3& intrinsic, const Vec3& direction, int order) {
-    const double along = dot(intrinsic, direction) / dot(direction, direction);
-    const int index = static_cast<int>(std::lround(along * order));
-    return ((index % order) + order) % order;
-}
-
-/// Which glide a mirror's intrinsic translation describes.
-std::string glide_letter(const Vec3& intrinsic, const Vec3& normal) {
-    const auto close = [](double value, double target) {
-        return std::abs(value - std::round(value - target) - target) < 1e-4;
-    };
-    const double x = intrinsic.x - std::round(intrinsic.x);
-    const double y = intrinsic.y - std::round(intrinsic.y);
-    const double z = intrinsic.z - std::round(intrinsic.z);
-    const Vec3 t{x, y, z};
-
-    if (t.norm() < 1e-4) {
-        return "m";
-    }
-    // A quarter translation in two directions at once is the diamond glide.
-    const auto is_quarter = [&](double value) {
-        return std::abs(std::abs(value) - 0.25) < 1e-4;
-    };
-    const int quarters = (is_quarter(x) ? 1 : 0) + (is_quarter(y) ? 1 : 0) +
-                         (is_quarter(z) ? 1 : 0);
-    if (quarters >= 2) {
-        return "d";
-    }
-    const auto is_half = [&](double value) { return std::abs(std::abs(value) - 0.5) < 1e-4; };
-    const int halves = (is_half(x) ? 1 : 0) + (is_half(y) ? 1 : 0) + (is_half(z) ? 1 : 0);
-    if (halves == 1) {
-        if (is_half(x)) return "a";
-        if (is_half(y)) return "b";
-        return "c";
-    }
-    if (halves >= 2) {
-        return "n";
-    }
-    (void)close;
-    (void)normal;
-    return "g";   // some other glide, which the short symbol has no letter for
-}
-
-/// Which of two glide letters the symbol prefers when a plane carries both.
-int glide_rank(const std::string& letter) {
-    if (letter == "m") return 0;
-    if (letter == "e") return 1;
-    if (letter == "a" || letter == "b" || letter == "c") return 2;
-    if (letter == "n") return 3;
-    if (letter == "d") return 4;
-    return 5;
-}
-
-/// Everything one symmetry direction carries, gathered from the operations.
-DirectionSymbols analyse_direction(const std::vector<SymmetryOperation>& operations,
-                                   const std::vector<Vec3>& family) {
-    DirectionSymbols out;
-    int best_order = 0;
-    int best_screw = 0;
-    std::vector<std::string> glides;
-
-    for (const Vec3& direction : family) {
-        for (const SymmetryOperation& operation : operations) {
-            const RotationType type = classify_rotation(operation.rotation);
-            if (type == RotationType::Identity || type == RotationType::Inversion) {
-                continue;
-            }
-            const Vec3 axis = axis_direction(operation.rotation, type);
-            if (!parallel(axis, direction)) {
-                continue;
-            }
-            const Vec3 intrinsic = intrinsic_translation(operation.rotation,
-                                                         operation.translation);
-
-            if (type == RotationType::Mirror) {
-                glides.push_back(glide_letter(intrinsic, direction));
-                continue;
-            }
-            const int order = rotation_order(type);
-            const int magnitude = std::abs(order);
-            const int screw = order > 0 ? screw_index(intrinsic, direction, magnitude) : 0;
-
-            // The slot names the generator of the axial subgroup, so the
-            // element generating the largest cyclic group wins. Between two
-            // that generate the same - a four-fold and a four-fold
-            // rotoinversion - the proper one is written, and between two of
-            // those the pure rotation beats the screw, which is what centring
-            // often provides both of.
-            const bool better =
-                best_order == 0 || cyclic_order(order) > cyclic_order(best_order) ||
-                (cyclic_order(order) == cyclic_order(best_order) && order > best_order) ||
-                (order == best_order && screw < best_screw);
-            if (better) {
-                best_order = order;
-                best_screw = screw;
-            }
-            (void)magnitude;
-        }
-    }
-
-    if (best_order != 0) {
-        out.axis_order = best_order;
-        if (best_order < 0) {
-            out.axis = "-" + std::to_string(-best_order);
-        } else if (best_screw == 0) {
-            out.axis = std::to_string(best_order);
-        } else {
-            out.axis = std::to_string(best_order) + "_" + std::to_string(best_screw);
-        }
-    }
-    if (!glides.empty()) {
-        // A plane carrying two different axial glides at once is the "e" of the
-        // 1992 revision - Aem2 rather than Abm2.
-        std::sort(glides.begin(), glides.end());
-        glides.erase(std::unique(glides.begin(), glides.end()), glides.end());
-        const bool double_glide =
-            std::count_if(glides.begin(), glides.end(), [](const std::string& g) {
-                return g == "a" || g == "b" || g == "c";
-            }) >= 2;
-        if (double_glide && std::find(glides.begin(), glides.end(), "m") == glides.end()) {
-            out.plane = "e";
-        } else {
-            out.plane = *std::min_element(glides.begin(), glides.end(),
-                                          [](const std::string& a, const std::string& b) {
-                                              return glide_rank(a) < glide_rank(b);
-                                          });
+        for (std::size_t c = 0; c < 3; ++c) {
+            out(r, c) = lattice[c][r];
         }
     }
     return out;
 }
 
-/// The short-symbol entry for one direction: the plane when there is one,
-/// otherwise the axis. The primary direction of the tetragonal, trigonal and
-/// hexagonal systems is the exception, where both are written.
-/// Whether an "axis over plane" entry is written at all.
-///
-/// Only for a proper rotation. A rotoinversion already contains its
-/// perpendicular mirror where there is one - `-6` is `3/m` written another way
-/// - so the symbol names the rotoinversion and stops: `P-6m2`, never
-/// `P-6/mm2`.
-bool combines(const DirectionSymbols& symbols) {
-    return symbols.axis_order > 0 && !symbols.axis.empty() && !symbols.plane.empty();
-}
-
-std::string short_entry(const DirectionSymbols& symbols, bool keep_both) {
-    if (symbols.axis.empty() && symbols.plane.empty()) {
-        return "1";
-    }
-    if (keep_both && combines(symbols)) {
-        return symbols.axis + "/" + symbols.plane;
-    }
-    if (symbols.axis_order < 0) {
-        return symbols.axis;
-    }
-    return symbols.plane.empty() ? symbols.axis : symbols.plane;
-}
-
-std::string full_entry(const DirectionSymbols& symbols) {
-    if (symbols.axis.empty() && symbols.plane.empty()) {
-        return "1";
-    }
-    if (combines(symbols)) {
-        return symbols.axis + "/" + symbols.plane;
-    }
-    if (symbols.axis_order < 0) {
-        return symbols.axis;
-    }
-    return symbols.plane.empty() ? symbols.axis : symbols.plane;
-}
-
-/// The point group symbol implied by a space group symbol: drop the centring,
-/// the screw subscripts, and turn every glide into a mirror.
-std::string point_group_of_symbol(const std::string& symbol) {
-    std::string out;
-    for (std::size_t k = 1; k < symbol.size(); ++k) {   // skip the centring letter
-        const char c = symbol[k];
-        if (c == '_') {
-            ++k;    // and the digit after it
-            continue;
+void to_spglib(const Mat3& matrix, double (&lattice)[3][3]) {
+    for (std::size_t r = 0; r < 3; ++r) {
+        for (std::size_t c = 0; c < 3; ++c) {
+            lattice[c][r] = matrix(r, c);
         }
-        if (c == 'a' || c == 'b' || c == 'c' || c == 'd' || c == 'e' || c == 'n') {
-            out += 'm';
-        } else {
-            out += c;
+    }
+}
+
+/// spglib takes N x 3 arrays; a flat vector of 3N doubles has the same layout.
+const double (*rows(const std::vector<double>& flat))[3] {
+    return reinterpret_cast<const double (*)[3]>(flat.data());
+}
+double (*rows(std::vector<double>& flat))[3] {
+    return reinterpret_cast<double (*)[3]>(flat.data());
+}
+
+/// A structure in spglib's terms: column lattice, fractional positions, types.
+struct Crystal {
+    double lattice[3][3]{};
+    std::vector<double> positions;  ///< 3N, fractional
+    std::vector<int> types;         ///< atomic numbers, or label ids with use_labels
+};
+
+void require_periodic(const Atoms& atoms) {
+    if (atoms.empty()) {
+        throw SymmetryError("symmetry: the structure has no atoms");
+    }
+    if (!atoms.cell().all_pbc() || !atoms.cell().is_invertible()) {
+        throw SymmetryError(
+            "symmetry: the cell must be periodic in all directions with non-zero volume");
+    }
+}
+
+Crystal to_crystal(const Atoms& atoms, bool use_labels) {
+    require_periodic(atoms);
+    Crystal c;
+    to_spglib(atoms.cell().matrix(), c.lattice);
+    c.positions = atoms.scaled_positions();
+    if (use_labels) {
+        std::map<std::string, int> ids;
+        for (const std::string& label : atoms.labels()) {
+            c.types.push_back(ids.try_emplace(label, static_cast<int>(ids.size()) + 1)
+                                  .first->second);
         }
+    } else {
+        c.types = atoms.numbers();
+    }
+    return c;
+}
+
+DatasetPtr search(const Crystal& c, double symprec, double angle_tolerance) {
+    DatasetPtr ds(spgat_get_dataset(c.lattice, rows(c.positions), c.types.data(),
+                                    static_cast<int>(c.types.size()), symprec, angle_tolerance),
+                  spg_free_dataset);
+    if (!ds) {
+        fail("symmetry search failed");
+    }
+    return ds;
+}
+
+SymmetryDataset convert(const SpglibDataset& d) {
+    const SpglibSpacegroupType type = spg_get_spacegroup_type(d.hall_number);
+    const auto n = static_cast<std::size_t>(d.n_atoms);
+    const auto n_std = static_cast<std::size_t>(d.n_std_atoms);
+
+    SymmetryDataset out;
+    out.number = d.spacegroup_number;
+    out.international = type.international_short;
+    out.hall = type.hall_symbol;
+    out.hall_number = d.hall_number;
+    out.choice = d.choice;
+    out.crystal_system = crystal_system_of(out.number);
+
+    std::set<IntMatrix3> distinct;
+    for (int i = 0; i < d.n_operations; ++i) {
+        IntMatrix3 rotation{};
+        for (std::size_t a = 0; a < 3; ++a) {
+            for (std::size_t b = 0; b < 3; ++b) {
+                rotation[a][b] = d.rotations[i][a][b];
+            }
+        }
+        distinct.insert(rotation);
+        out.rotations.push_back(rotation);
+        out.translations.emplace_back(d.translations[i][0], d.translations[i][1],
+                                      d.translations[i][2]);
+    }
+    out.pointgroup = {d.pointgroup_symbol, type.pointgroup_schoenflies,
+                      static_cast<int>(distinct.size()), out.crystal_system};
+
+    for (std::size_t i = 0; i < n; ++i) {
+        out.wyckoffs.push_back(static_cast<char>('a' + d.wyckoffs[i]));
+        out.site_symmetry_symbols.emplace_back(d.site_symmetry_symbols[i]);
+    }
+    out.equivalent_atoms.assign(d.equivalent_atoms, d.equivalent_atoms + n);
+    out.crystallographic_orbits.assign(d.crystallographic_orbits, d.crystallographic_orbits + n);
+
+    out.std_lattice = from_spglib(d.std_lattice);
+    out.std_types.assign(d.std_types, d.std_types + n_std);
+    for (std::size_t i = 0; i < n_std; ++i) {
+        out.std_positions.emplace_back(d.std_positions[i][0], d.std_positions[i][1],
+                                       d.std_positions[i][2]);
+    }
+    for (std::size_t r = 0; r < 3; ++r) {
+        for (std::size_t c = 0; c < 3; ++c) {
+            out.transformation_matrix(r, c) = d.transformation_matrix[r][c];
+        }
+    }
+    out.origin_shift = Vec3{d.origin_shift[0], d.origin_shift[1], d.origin_shift[2]};
+
+    out.primitive_lattice = from_spglib(d.primitive_lattice);
+    out.mapping_to_primitive.assign(d.mapping_to_primitive, d.mapping_to_primitive + n);
+    out.std_mapping_to_primitive.assign(d.std_mapping_to_primitive,
+                                        d.std_mapping_to_primitive + n_std);
+    return out;
+}
+
+/// The standardised structure. Labels come from the input atom that shares
+/// both the primitive-cell id and the spglib type with the output atom.
+Atoms standardized(const Atoms& atoms, bool to_primitive, bool no_idealize, double symprec,
+                   double angle_tolerance, bool use_labels) {
+    const Crystal input = to_crystal(atoms, use_labels);
+    const DatasetPtr ds = search(input, symprec, angle_tolerance);
+    const std::size_t n = input.types.size();
+    const std::size_t capacity = std::max(n, static_cast<std::size_t>(ds->n_std_atoms));
+
+    // spglib overwrites the arrays in place and needs room for the largest cell.
+    Crystal work = input;
+    work.positions.resize(3 * capacity, 0.0);
+    work.types.resize(capacity, 0);
+    const int n_out = spgat_standardize_cell(work.lattice, rows(work.positions),
+                                             work.types.data(), static_cast<int>(n),
+                                             to_primitive ? 1 : 0, no_idealize ? 1 : 0, symprec,
+                                             angle_tolerance);
+    if (n_out <= 0) {
+        fail("cell standardisation failed");
+    }
+    const auto count = static_cast<std::size_t>(n_out);
+
+    std::map<int, int> number_of_type;
+    for (std::size_t i = 0; i < n; ++i) {
+        number_of_type.try_emplace(input.types[i], atoms.number(i));
+    }
+    std::vector<int> numbers(count);
+    for (std::size_t o = 0; o < count; ++o) {
+        numbers[o] = number_of_type.at(work.types[o]);
+    }
+    Atoms out(numbers, std::vector<double>(3 * count, 0.0),
+              Cell(from_spglib(work.lattice), {true, true, true}));
+    out.set_scaled_positions(
+        std::vector<double>(work.positions.begin(),
+                            work.positions.begin() + static_cast<std::ptrdiff_t>(3 * count)));
+
+    if (atoms.has_string_array("labels")) {
+        const std::vector<std::string> labels = atoms.labels();
+        std::map<std::pair<int, int>, std::size_t> source;
+        for (std::size_t k = 0; k < n; ++k) {
+            source.try_emplace({ds->mapping_to_primitive[k], input.types[k]}, k);
+        }
+        // Unidealised primitive atoms are numbered by their primitive id; all
+        // other outputs follow the standard cell.
+        const bool by_primitive_id = to_primitive && no_idealize;
+        std::vector<std::string> out_labels;
+        for (std::size_t o = 0; o < count; ++o) {
+            int id = -1;
+            if (by_primitive_id) {
+                id = static_cast<int>(o);
+            } else if (o < static_cast<std::size_t>(ds->n_std_atoms)) {
+                id = ds->std_mapping_to_primitive[o];
+            }
+            const auto found = source.find({id, work.types[o]});
+            out_labels.push_back(found == source.end() ? out.symbol(o) : labels[found->second]);
+        }
+        out.set_string_array("labels", out_labels);
     }
     return out;
 }
 
 }  // namespace
 
-std::string WyckoffPosition::to_string() const {
-    std::ostringstream out;
-    out << multiplicity << letter << " (" << site_symmetry << ")";
-    return out.str();
+SymmetryDataset get_symmetry_dataset(const Atoms& atoms, double symprec, double angle_tolerance,
+                                     bool use_labels) {
+    return convert(*search(to_crystal(atoms, use_labels), symprec, angle_tolerance));
 }
 
-std::string SpaceGroup::to_string() const {
-    std::ostringstream out;
-    out << "SpaceGroup(" << hermann_mauguin;
-    if (number > 0) {
-        out << ", No. " << number;
+SpaceGroup analyse(const Atoms& atoms, double tolerance, double angle_tolerance,
+                   bool use_labels) {
+    const SymmetryDataset ds =
+        get_symmetry_dataset(atoms, tolerance, angle_tolerance, use_labels);
+    SpaceGroup out;
+    out.number = ds.number;
+    out.international = ds.international;
+    out.pointgroup = ds.pointgroup;
+    out.crystal_system = ds.crystal_system;
+
+    std::map<char, WyckoffPosition> orbits;
+    for (std::size_t i = 0; i < ds.wyckoffs.size(); ++i) {
+        WyckoffPosition& orbit =
+            orbits.try_emplace(ds.wyckoffs[i], WyckoffPosition{ds.wyckoffs[i],
+                                                               ds.site_symmetry_symbols[i], {}})
+                .first->second;
+        orbit.atoms.push_back(i);
     }
-    out << ", " << point_group.symbol << ", " << operations.size() << " operations)";
-    return out.str();
+    for (auto& entry : orbits) {
+        out.wyckoff.push_back(std::move(entry.second));
+    }
+    return out;
 }
 
-std::string SpaceGroup::summary() const {
-    std::ostringstream out;
-    out << "space group : " << hermann_mauguin;
-    if (number > 0) {
-        out << "  (No. " << number << ")";
-    }
-    out << "\nfull symbol : " << hermann_mauguin_full
-        << "\nSchoenflies : " << schoenflies
-        << "\npoint group : " << point_group.symbol << " (" << point_group.schoenflies << ")"
-        << "\nsystem      : " << crystal_system_name(system) << ", "
-        << centring_letter(centring) << "-centred"
-        << "\noperations  : " << operations.size()
-        << "\natoms       : " << primitive_atoms << " primitive, " << conventional_atoms
-        << " conventional";
-    if (!wyckoff.empty()) {
-        out << "\nWyckoff     :";
-        for (const WyckoffPosition& position : wyckoff) {
-            out << " " << position.to_string();
+const std::vector<std::pair<int, std::string>>& space_group_table() {
+    static const std::vector<std::pair<int, std::string>> table = [] {
+        // Hall numbers are listed in order, so the first setting of each
+        // space group is the one kept here.
+        std::map<int, std::string> symbols;
+        for (int hall = 1; hall <= 530; ++hall) {
+            const SpglibSpacegroupType type = spg_get_spacegroup_type(hall);
+            symbols.try_emplace(type.number, type.international_short);
         }
-    }
-    return out.str();
+        symbols.erase(0);
+        return std::vector<std::pair<int, std::string>>(symbols.begin(), symbols.end());
+    }();
+    return table;
 }
 
-SpaceGroup analyse(const Atoms& atoms, double tolerance) {
-    if (atoms.empty() || !atoms.cell().is_invertible()) {
-        throw SymmetryError("determining a space group needs atoms and a cell that spans "
-                            "three dimensions");
-    }
-
-    SpaceGroup group;
-    group.tolerance = tolerance;
-
-    const CellAnalysis cell = analyse_cell(atoms, tolerance);
-    group.point_group = cell.point_group;
-    group.system = cell.system;
-    group.centring = cell.centring;
-    group.primitive_atoms = cell.primitive_atoms;
-    group.conventional_atoms = cell.conventional_atoms;
-
-    // Everything below works on the primitive cell. A supercell admits fewer
-    // operations than the crystal has - its lattice is a sublattice, and most
-    // of the rotations do not map it onto itself - so analysing what was handed
-    // in would answer a question about the box rather than about the crystal.
-    group.primitive = cell.input_multiplicity == 1 ? atoms
-                                                   : primitive_cell(atoms, tolerance);
-    const SymmetryDataset dataset = find_symmetry(group.primitive, tolerance);
-    group.operations = dataset.operations;
-
-    // The symbol is read off the operations in the conventional basis, where
-    // the symmetry directions are the axes. The change of basis for a rotation
-    // is the usual conjugation.
-    const Mat3 P = cell.conventional_cell * group.primitive.cell().inverse_matrix();
-    const Mat3 P_inverse = P.inverse();
-    std::vector<SymmetryOperation> conventional;
-    conventional.reserve(dataset.operations.size());
-    for (const SymmetryOperation& operation : dataset.operations) {
-        SymmetryOperation moved = operation;
-        moved.rotation = P * operation.rotation * P_inverse;
-        moved.translation = operation.translation * P_inverse;
-        moved.translation = Vec3{wrap01(moved.translation.x), wrap01(moved.translation.y),
-                                 wrap01(moved.translation.z)};
-        conventional.push_back(moved);
-    }
-
-    const Directions directions = directions_for(group.system);
-    const DirectionSymbols primary = analyse_direction(conventional, directions.primary);
-    const DirectionSymbols secondary = analyse_direction(conventional, directions.secondary);
-    const DirectionSymbols tertiary = analyse_direction(conventional, directions.tertiary);
-
-    const bool keep_both = group.system == CrystalSystem::Tetragonal ||
-                           group.system == CrystalSystem::Trigonal ||
-                           group.system == CrystalSystem::Hexagonal ||
-                           group.system == CrystalSystem::Monoclinic;
-
-    std::string symbol(1, centring_letter(group.centring));
-    std::string full(1, centring_letter(group.centring));
-
-    if (group.system == CrystalSystem::Triclinic) {
-        symbol += group.point_group.centrosymmetric ? "-1" : "1";
-        full = symbol;
-    } else {
-        std::string one = short_entry(primary, keep_both);
-        std::string two = short_entry(secondary, false);
-        std::string three = short_entry(tertiary, false);
-
-        // Trailing "1"s carry information when only one of the two lower
-        // directions is occupied - P3m1 and P31m are different groups - but
-        // not when both are empty.
-        if (two == "1" && three == "1") {
-            two.clear();
-            three.clear();
+int space_group_number(const std::string& hermann_mauguin) {
+    for (const auto& [number, symbol] : space_group_table()) {
+        if (symbol == hermann_mauguin) {
+            return number;
         }
-        // A rhombohedral cell has no tertiary direction to speak of.
-        if (group.centring == Centring::R) {
-            three.clear();
-        }
-        // Cubic groups drop an empty tertiary as well: P23, Pm-3, Pa-3.
-        if (group.system == CrystalSystem::Cubic && three == "1") {
-            three.clear();
-        }
-        symbol += one + two + three;
-        full += " " + full_entry(primary) + " " + full_entry(secondary) + " " +
-                full_entry(tertiary);
     }
+    return 0;
+}
 
-    group.hermann_mauguin = symbol;
-    group.hermann_mauguin_full = full;
-    group.number = space_group_number(symbol);
-
-    // The Schoenflies superscript is the group's position among those sharing
-    // its point group, which the table gives without needing a second one.
-    if (group.number > 0) {
-        int index = 0;
-        for (const auto& [number, entry] : space_group_table()) {
-            if (point_group_of_symbol(entry) == point_group_of_symbol(symbol)) {
-                ++index;
-                if (number == group.number) {
-                    break;
-                }
-            }
+std::string space_group_symbol(int number) {
+    for (const auto& [n, symbol] : space_group_table()) {
+        if (n == number) {
+            return symbol;
         }
-        group.schoenflies = group.point_group.schoenflies + "-" + std::to_string(index);
-    } else {
-        group.schoenflies = group.point_group.schoenflies;
     }
+    throw SymmetryError("space group number out of range: " + std::to_string(number));
+}
 
-    // Wyckoff orbits: the atoms the operations tie together, with the site
-    // symmetry of each read off the operations that leave a member alone.
-    std::map<std::size_t, std::vector<std::size_t>> orbits;
-    for (std::size_t i = 0; i < dataset.equivalent_atoms.size(); ++i) {
-        orbits[dataset.equivalent_atoms[i]].push_back(i);
-    }
-    const int scale = group.primitive.empty()
-                          ? 1
-                          : static_cast<int>(cell.conventional_atoms / group.primitive.size());
-    for (const auto& [representative, members] : orbits) {
-        WyckoffPosition position;
-        position.atoms = members;
-        position.multiplicity = static_cast<int>(members.size()) * std::max(scale, 1);
-        position.representative =
-            group.primitive.position(representative) * group.primitive.cell().inverse_matrix();
+CellAnalysis analyse_cell(const Atoms& atoms, double symprec, double angle_tolerance,
+                          bool use_labels) {
+    const SymmetryDataset ds = get_symmetry_dataset(atoms, symprec, angle_tolerance, use_labels);
+    CellAnalysis out;
+    out.number = ds.number;
+    out.international = ds.international;
+    out.pointgroup = ds.pointgroup;
+    out.crystal_system = ds.crystal_system;
+    out.primitive_atoms = find_primitive(atoms, symprec, angle_tolerance, use_labels).size();
+    out.to_primitive = ds.primitive_lattice * atoms.cell().inverse_matrix();
+    return out;
+}
 
-        std::vector<Mat3> site;
-        for (const SymmetryOperation& operation : phonon::site_symmetry(dataset, representative)) {
-            site.push_back(operation.cartesian_rotation);
-        }
-        try {
-            position.site_symmetry = identify_point_group(site).symbol;
-        } catch (const SymmetryError&) {
-            position.site_symmetry = "?";
-        }
-        group.wyckoff.push_back(std::move(position));
+Atoms standardize_cell(const Atoms& atoms, bool to_primitive, bool no_idealize, double symprec,
+                       double angle_tolerance, bool use_labels) {
+    return standardized(atoms, to_primitive, no_idealize, symprec, angle_tolerance, use_labels);
+}
+
+Atoms find_primitive(const Atoms& atoms, double symprec, double angle_tolerance,
+                     bool use_labels) {
+    return standardized(atoms, true, false, symprec, angle_tolerance, use_labels);
+}
+
+Atoms niggli_reduce(const Atoms& atoms, double symprec) {
+    require_periodic(atoms);
+    double lattice[3][3];
+    to_spglib(atoms.cell().matrix(), lattice);
+    if (spg_niggli_reduce(lattice, symprec) == 0) {
+        fail("Niggli reduction failed");
     }
-    std::sort(group.wyckoff.begin(), group.wyckoff.end(),
-              [](const WyckoffPosition& a, const WyckoffPosition& b) {
-                  if (a.multiplicity != b.multiplicity) {
-                      return a.multiplicity < b.multiplicity;
-                  }
-                  return a.atoms.front() < b.atoms.front();
-              });
-    char letter = 'a';
-    for (WyckoffPosition& position : group.wyckoff) {
-        position.letter = letter;
-        letter = letter == 'z' ? 'z' : static_cast<char>(letter + 1);
-    }
-    return group;
+    Atoms out = atoms;
+    out.set_cell(Cell(from_spglib(lattice), atoms.pbc()));
+    return out;
 }
 
 }  // namespace fastatoms::symmetry

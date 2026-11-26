@@ -1,0 +1,38 @@
+{
+  "name": "fastatoms",
+  "version": "0.3.0",
+  "description": "Read and write atomic structures (VASP, extxyz, CIF, LAMMPS) and compute neighbour lists, in the browser and Node, via WebAssembly",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/*.js",
+    "dist/*.d.ts",
+    "dist/wasm/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh --full",
+    "build:wasm:minimal": "bash scripts/build-wasm.sh --minimal",
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test \"test/*.test.mjs\"",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "tsc --noEmit && biome check ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "typescript": "~7.0.2"
+  }
+}
