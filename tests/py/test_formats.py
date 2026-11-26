@@ -68,6 +68,26 @@ def _check_cif_no_cell(text: str, path: Path, fmt: str, ase_fmt: str) -> None:
         fastatoms.read_all(text, fmt)
 
 
+def _check_cif_hex_third(text: str, path: Path, fmt: str, ase_fmt: str) -> None:
+    """Truncated 1/3, 2/3 coordinates in P6_3/mmc merge to the true 2 atoms.
+
+    Images are merged within 0.01 A (Cartesian, periodic). ASE merges with a
+    fractional 1e-3 per component: the 4-digit file gives 2 atoms in both, but the
+    merged representative differs by ~2.5e-4 A (each keeps a different image); the
+    3-digit file's images sit exactly on ASE's threshold and it keeps 4.
+    """
+    import ase.io
+
+    ours = fastatoms.read_all(text, fmt)[0]
+    assert list(ours.numbers) == [6, 6], "the two C sites of graphite-like P6_3/mmc"
+    theirs = ase.io.read(path, format=ase_fmt, index=-1)
+    assert not isinstance(theirs, list)
+    if len(theirs) == len(ours):
+        # Same atoms, up to which image of each merged orbit is kept.
+        d = ours.to_ase().positions[:, None, :] - theirs.positions[None, :, :]
+        assert np.abs(d).max(axis=2).min(axis=1).max() < 1e-3
+
+
 def _check_general_triclinic_data(text: str, path: Path, fmt: str, ase_fmt: str) -> None:
     """LAMMPS general triclinic: fastatoms subtracts the 'abc origin'; ASE does not.
 
@@ -88,8 +108,8 @@ def _check_dump_type_without_element(text: str, path: Path, fmt: str, ase_fmt: s
 
     fastatoms gives element X (Z=0) with the label set to the type number as a
     string. ASE uses Z = type. Positions still agree: unscaled x/y/z columns are
-    shifted by the box origin and, by default, unwrapped by the image flags, while
-    scaled columns are not shifted at all.
+    shifted by the box origin, and the image flags are not applied to them (as in
+    ASE), while scaled columns are not shifted at all.
     """
     frames = fastatoms.read_all(text, fmt)
     refs = ase_io.read(path, index=":", format=ase_fmt)
@@ -104,14 +124,20 @@ def _check_dump_type_without_element(text: str, path: Path, fmt: str, ase_fmt: s
 
         if unscaled:
             expected = ref.positions - ref.get_celldisp().reshape(3)
-            if "image" in ours.arrays:
-                expected = expected + np.asarray(ours.arrays["image"]) @ np.asarray(ours.cell)
         else:
             expected = ref.positions
         np.testing.assert_allclose(ours.positions, expected, atol=1e-6)
 
 
 DELIBERATE_DIFFERENCES: dict[str, tuple[str, Callable[..., None]]] = {
+    "cif/hex_third_4digit.cif": (
+        "symmetry images merge within 0.01 A; ASE keeps a different image of the merged orbit",
+        _check_cif_hex_third,
+    ),
+    "cif/hex_third_3digit.cif": (
+        "0.333/0.667 images merge to 2 atoms; ASE's fractional 1e-3 threshold keeps 4",
+        _check_cif_hex_third,
+    ),
     "cif/disorder.cif": (
         (
             "keep_all (the default) keeps every site with its occupancy as data; ASE drops "
@@ -158,9 +184,8 @@ DELIBERATE_DIFFERENCES: dict[str, tuple[str, Callable[..., None]]] = {
     ),
     "lammps/triclinic_image.lammpstrj": (
         (
-            "a tilted dump: the box origin is subtracted (ASE keeps it as celldisp), image flags "
-            "are applied by default (unwrap=true; ASE ignores ix/iy/iz for x/y/z columns), and "
-            "the element is X (Z=0) with the type number as label; ASE uses Z = type"
+            "a tilted dump: the box origin is subtracted (ASE keeps it as celldisp), and the "
+            "element is X (Z=0) with the type number as label; ASE uses Z = type"
         ),
         partial(_check_dump_type_without_element, unscaled=True),
     ),
@@ -190,7 +215,8 @@ def _ase_view(frame: Any, fmt: str, atol: float) -> Any:
     The LAMMPS data reader keeps positions as written and records the image flags in
     arrays["image"]; ASE adds image @ cell to the positions. Applying the same
     shift here makes the comparison about the structure, not the convention. The dump
-    reader already unwraps by default, so dumps are compared as they are.
+    reader takes x/y/z as written by default (unwrap=false), so dumps are compared as
+    they are.
     """
     if fmt == "lammps-data" and "image" in frame.arrays:
         view = frame.copy()

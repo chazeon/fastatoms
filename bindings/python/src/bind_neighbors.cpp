@@ -7,7 +7,7 @@
 #include "common.hpp"
 
 #ifdef FASTATOMS_WITH_NEIGHBORS
-#include "fastatoms/neighbor/neighbor_list.hpp"
+#include "fastatoms/core/neighbor_list.hpp"
 #endif
 
 namespace fastatoms::bindings {

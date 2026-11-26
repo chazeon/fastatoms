@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "fastatoms/formats/lammps.hpp"
+#include "fastatoms/io/lammps.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,7 +14,7 @@
 #include "fastatoms/core/elements.hpp"
 #include "lammps_common.hpp"
 
-namespace fastatoms::formats {
+namespace fastatoms::io {
 namespace {
 
 using namespace lammps_common;
@@ -687,4 +687,4 @@ std::string write_lammps_data(const Atoms& atoms, const LammpsDataWriteOptions& 
     return out;
 }
 
-}  // namespace fastatoms::formats
+}  // namespace fastatoms::io

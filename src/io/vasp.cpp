@@ -1,570 +1,758 @@
+// SPDX-License-Identifier: MIT
 #include "fastatoms/io/vasp.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <charconv>
 #include <cmath>
-#include <fstream>
-#include <iomanip>
+#include <cstdint>
+#include <map>
 #include <optional>
-#include <sstream>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
 
-#include "fastatoms/calculators/single_point.hpp"
-#include "fastatoms/core/constraints.hpp"
+#include "fastatoms/core/cell.hpp"
 #include "fastatoms/core/elements.hpp"
-#include "fastatoms/core/units.hpp"
+#include "fastatoms/core/value.hpp"
+#include "fastatoms/core/vec3.hpp"
+#include "fastatoms/io/format.hpp"
 
 namespace fastatoms::io {
 namespace {
 
-std::vector<std::string> split(const std::string& line) {
-    std::istringstream stream(line);
-    std::vector<std::string> fields;
-    std::string field;
-    while (stream >> field) {
-        fields.push_back(field);
-    }
-    return fields;
+using Lines = std::vector<std::string_view>;
+using Tokens = std::vector<std::string_view>;
+
+bool is_blank_char(char c) noexcept {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\v' || c == '\f';
 }
 
-/// A line, or throw saying which file ran out and where.
-std::string require_line(std::istream& stream, const std::string& origin, const char* what) {
-    std::string line;
-    if (!std::getline(stream, line)) {
-        throw ExtxyzError("vasp: '" + origin + "' ends where the " + what + " should be");
+/// Lines without their terminator. CRLF is handled by dropping the '\r'; a
+/// leading UTF-8 byte-order mark is dropped.
+Lines split_lines(std::string_view text) {
+    if (text.starts_with("\xEF\xBB\xBF")) {
+        text.remove_prefix(3);
     }
-    return line;
-}
-
-double to_double(const std::string& text, const std::string& origin, const char* what) {
-    try {
-        std::size_t consumed = 0;
-        const double value = std::stod(text, &consumed);
-        if (consumed != text.size()) {
-            throw std::invalid_argument("trailing");
+    Lines lines;
+    std::size_t start = 0;
+    while (start < text.size()) {
+        std::size_t end = text.find('\n', start);
+        if (end == std::string_view::npos) {
+            end = text.size();
         }
-        return value;
-    } catch (const std::exception&) {
-        throw ExtxyzError("vasp: '" + origin + "': the " + what + " should be a number, not '" +
-                          text + "'");
-    }
-}
-
-long to_long(const std::string& text, const std::string& origin, const char* what) {
-    try {
-        std::size_t consumed = 0;
-        const long value = std::stol(text, &consumed);
-        if (consumed != text.size()) {
-            throw std::invalid_argument("trailing");
+        std::string_view line = text.substr(start, end - start);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
         }
-        return value;
-    } catch (const std::exception&) {
-        throw ExtxyzError("vasp: '" + origin + "': the " + what + " should be a whole number, "
-                          "not '" + text + "'");
+        lines.push_back(line);
+        start = end + 1;
+    }
+    return lines;
+}
+
+Tokens tokens(std::string_view line) {
+    Tokens out;
+    std::size_t i = 0;
+    while (i < line.size()) {
+        while (i < line.size() && is_blank_char(line[i])) {
+            ++i;
+        }
+        const std::size_t start = i;
+        while (i < line.size() && !is_blank_char(line[i])) {
+            ++i;
+        }
+        if (i > start) {
+            out.push_back(line.substr(start, i - start));
+        }
+    }
+    return out;
+}
+
+/// Tokens before a `#` or `!` comment (the species, counts and scale lines).
+Tokens code_tokens(std::string_view line) {
+    const std::size_t cut = line.find_first_of("#!");
+    return tokens(cut == std::string_view::npos ? line : line.substr(0, cut));
+}
+
+/// The first non-blank character of a line, or '\0' for a blank line.
+char first_char(std::string_view line) noexcept {
+    for (const char c : line) {
+        if (!is_blank_char(c)) {
+            return c;
+        }
+    }
+    return '\0';
+}
+
+bool is_blank(std::string_view line) noexcept { return first_char(line) == '\0'; }
+
+[[noreturn]] void fail(std::size_t index, const std::string& what) {
+    throw FormatError("vasp: line " + std::to_string(index + 1) + ": " + what);
+}
+
+std::string_view line_at(const Lines& lines, std::size_t index, const char* what) {
+    if (index >= lines.size()) {
+        throw FormatError("vasp: unexpected end of file, expected " + std::string(what) +
+                          " at line " + std::to_string(index + 1));
+    }
+    return lines[index];
+}
+
+std::size_t skip_blank(const Lines& lines, std::size_t i) noexcept {
+    while (i < lines.size() && is_blank(lines[i])) {
+        ++i;
+    }
+    return i;
+}
+
+/// Drops an optional leading '+' so from_chars (which rejects it) can parse.
+/// A second sign after the '+' is rejected.
+std::optional<std::string_view> strip_plus(std::string_view s) {
+    if (!s.empty() && s.front() == '+') {
+        s.remove_prefix(1);
+        if (!s.empty() && (s.front() == '+' || s.front() == '-')) {
+            return std::nullopt;
+        }
+    }
+    return s;
+}
+
+/// A finite real number. Fortran exponents (`1.0D-03`) are accepted. A number
+/// too small for a double (`1e-400`) reads as zero; too large (`1e400`), nan
+/// and inf are rejected.
+std::optional<double> parse_double(std::string_view token) {
+    std::string text(token);
+    for (char& c : text) {
+        if (c == 'd' || c == 'D') {
+            c = 'e';
+        }
+    }
+    const auto body = strip_plus(text);
+    if (!body || body->empty()) {
+        return std::nullopt;
+    }
+    double value = 0.0;
+    const char* end = body->data() + body->size();
+    const auto [ptr, ec] = std::from_chars(body->data(), end, value);
+    if (ptr != end) {
+        return std::nullopt;
+    }
+    if (ec == std::errc::result_out_of_range) {
+        // The exponent decides: a negative one is underflow, anything else overflow.
+        const std::size_t e = body->find_first_of("eE");
+        if (e == std::string_view::npos || e + 1 >= body->size() || (*body)[e + 1] != '-') {
+            return std::nullopt;
+        }
+        return 0.0;
+    }
+    if (ec != std::errc{} || !std::isfinite(value)) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// A whole-token integer, with an optional sign.
+std::optional<std::int64_t> parse_integer(std::string_view token) {
+    const auto body = strip_plus(token);
+    if (!body || body->empty()) {
+        return std::nullopt;
+    }
+    std::int64_t value = 0;
+    const char* end = body->data() + body->size();
+    const auto [ptr, ec] = std::from_chars(body->data(), end, value);
+    if (ec != std::errc{} || ptr != end) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// Parsed structure header: everything before the coordinates.
+struct Header {
+    std::string comment;
+    std::array<Vec3, 3> lattice{};        ///< lattice vectors, scale applied
+    std::array<double, 3> factor{1, 1, 1};  ///< per-axis scale for Cartesian coordinates
+    std::vector<std::string> species;     ///< one label per species block
+    std::vector<int> numbers;             ///< atomic number per species block
+    std::vector<std::size_t> counts;      ///< atoms per species block
+    std::size_t next{0};                  ///< first line after the counts line
+
+    [[nodiscard]] std::size_t size() const noexcept {
+        std::size_t n = 0;
+        for (const std::size_t c : counts) {
+            n += c;
+        }
+        return n;
+    }
+};
+
+/// Parses a header starting at `first` (the comment line). Handles VASP 4 and
+/// VASP 5 layouts, scale lines and atom counts.
+Header parse_header(const Lines& lines, std::size_t first, const PoscarReadOptions& options) {
+    Header h;
+    h.comment = std::string(line_at(lines, first, "comment line"));
+
+    const std::size_t scale_index = first + 1;
+    const Tokens scale_tokens = code_tokens(line_at(lines, scale_index, "scale line"));
+    std::vector<double> scale;
+    for (std::size_t k = 0; k < scale_tokens.size() && k < 3; ++k) {
+        const auto value = parse_double(scale_tokens[k]);
+        if (!value) {
+            break;
+        }
+        scale.push_back(*value);
+    }
+    if (scale.size() != 1 && scale.size() != 3) {
+        fail(scale_index, "the scale line needs one or three numbers");
+    }
+
+    std::array<Vec3, 3> lattice{};
+    for (std::size_t r = 0; r < 3; ++r) {
+        const std::size_t index = first + 2 + r;
+        const Tokens t = tokens(line_at(lines, index, "lattice vector"));
+        if (t.size() < 3) {
+            fail(index, "a lattice vector needs three numbers");
+        }
+        std::array<double, 3> v{};
+        for (std::size_t k = 0; k < 3; ++k) {
+            const auto value = parse_double(t[k]);
+            if (!value) {
+                fail(index, "bad lattice number '" + std::string(t[k]) + "'");
+            }
+            v[k] = *value;
+        }
+        lattice[r] = Vec3(v[0], v[1], v[2]);
+    }
+
+    // Scale semantics follow ASE (read_vasp): a single positive value scales
+    // everything; a negative value is a target volume; three values are
+    // per-axis factors applied to the components of the lattice vectors (and
+    // of Cartesian coordinates) along x, y and z.
+    if (scale.size() == 1) {
+        const double s = scale[0];
+        if (s < 0.0) {
+            const double det = Mat3::from_rows(lattice[0], lattice[1], lattice[2]).determinant();
+            if (det == 0.0) {
+                fail(scale_index, "a negative scale (target volume) needs a non-singular cell");
+            }
+            const double f = std::cbrt(-s / std::abs(det));
+            h.factor = {f, f, f};
+        } else {
+            if (s == 0.0) {
+                fail(scale_index, "the scale factor must be nonzero");
+            }
+            h.factor = {s, s, s};
+        }
+    } else {
+        for (std::size_t k = 0; k < 3; ++k) {
+            if (!(scale[k] > 0.0)) {
+                fail(scale_index, "per-axis scale factors must be positive");
+            }
+            h.factor[k] = scale[k];
+        }
+    }
+    for (std::size_t r = 0; r < 3; ++r) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            lattice[r][k] *= h.factor[k];
+        }
+    }
+    h.lattice = lattice;
+
+    // Line 6 is either the VASP 5 species line or the VASP 4 counts line.
+    std::size_t counts_at = first + 5;
+    const Tokens line5 = code_tokens(line_at(lines, counts_at, "species or counts line"));
+    if (line5.empty()) {
+        fail(counts_at, "blank line where the species or counts line is expected");
+    }
+    Tokens labels;
+    if (!parse_integer(line5[0])) {
+        labels = line5;
+        counts_at = first + 6;
+    }
+    const Tokens count_tokens = code_tokens(line_at(lines, counts_at, "atom counts line"));
+    h.next = counts_at + 1;
+    if (count_tokens.empty()) {
+        fail(counts_at, "no atom counts");
+    }
+    for (const std::string_view t : count_tokens) {
+        const auto c = parse_integer(t);
+        if (!c || *c < 0) {
+            fail(counts_at, "bad atom count '" + std::string(t) + "'");
+        }
+        h.counts.push_back(static_cast<std::size_t>(*c));
+    }
+
+    auto resolve = [&](const std::vector<std::string>& names, std::size_t index) {
+        for (const std::string& name : names) {
+            const int z = try_number_from_label(name);
+            if (z < 0) {
+                fail(index, "cannot tell the element of species '" + name + "'");
+            }
+            h.numbers.push_back(z);
+        }
+        h.species = names;
+    };
+
+    if (!labels.empty()) {
+        if (labels.size() != count_tokens.size()) {
+            fail(first + 5, "the species line names " + std::to_string(labels.size()) +
+                                " species but the counts line has " +
+                                std::to_string(count_tokens.size()));
+        }
+        std::vector<std::string> names;
+        for (const std::string_view l : labels) {
+            names.emplace_back(l);
+        }
+        resolve(names, first + 5);
+    } else {
+        // VASP 4: no species line. Use the option, else comment-line tokens
+        // that all resolve as labels.
+        std::vector<std::string> names = options.species;
+        if (names.empty()) {
+            const Tokens comment_tokens = tokens(lines[first]);
+            const bool all_labels =
+                !comment_tokens.empty() &&
+                std::all_of(comment_tokens.begin(), comment_tokens.end(),
+                            [](std::string_view t) { return try_number_from_label(t) >= 0; });
+            if (!all_labels) {
+                fail(first, "VASP 4 file without a species line: pass the species option "
+                            "or name the species in the comment line");
+            }
+            for (const std::string_view t : comment_tokens) {
+                names.emplace_back(t);
+            }
+        }
+        if (names.size() != count_tokens.size()) {
+            fail(counts_at, std::to_string(names.size()) + " species given but the counts line has " +
+                                std::to_string(count_tokens.size()) + " entries");
+        }
+        resolve(names, counts_at);
+    }
+
+    if (h.size() == 0) {
+        fail(counts_at, "the structure has no atoms");
+    }
+    return h;
+}
+
+/// Fractional -> Cartesian with the header's lattice rows.
+Vec3 to_cartesian(const Header& h, const Vec3& frac) {
+    Vec3 r = h.lattice[0] * frac.x;
+    r += h.lattice[1] * frac.y;
+    r += h.lattice[2] * frac.z;
+    return r;
+}
+
+/// One coordinate line: three numbers, then T/F flags if selective dynamics
+/// is on. Trailing tokens (e.g. a `! Fe1` site label) are ignored.
+void parse_position(std::string_view line, std::size_t index, bool selective, double* xyz,
+                    std::int64_t* flags) {
+    const Tokens t = tokens(line);
+    if (t.size() < 3) {
+        fail(index, "a position needs three coordinates");
+    }
+    for (std::size_t k = 0; k < 3; ++k) {
+        const auto value = parse_double(t[k]);
+        if (!value) {
+            fail(index, "bad coordinate '" + std::string(t[k]) + "'");
+        }
+        xyz[k] = *value;
+    }
+    if (!selective) {
+        return;
+    }
+    if (t.size() < 6) {
+        fail(index, "selective dynamics is on but the position has no T/F flags");
+    }
+    for (std::size_t k = 0; k < 3; ++k) {
+        const char c = t[3 + k].size() == 1 ? t[3 + k][0] : '\0';
+        if (c == 'T' || c == 't') {
+            flags[k] = 1;
+        } else if (c == 'F' || c == 'f') {
+            flags[k] = 0;
+        } else {
+            fail(index, "bad selective-dynamics flag '" + std::string(t[3 + k]) + "'");
+        }
     }
 }
 
-/// True when every field names an element, which is how a version-4 file's
-/// comment line can be pressed into service as the species list.
-bool all_are_symbols(const std::vector<std::string>& fields) {
-    if (fields.empty()) {
+/// Three numbers from a line, or false. Never throws, for the optional block.
+bool try_vec3(std::string_view line, double* out) {
+    const Tokens t = tokens(line);
+    if (t.size() < 3) {
         return false;
     }
-    return std::all_of(fields.begin(), fields.end(), [](const std::string& field) {
-        return try_number_from_symbol(field) > 0;
-    });
+    for (std::size_t k = 0; k < 3; ++k) {
+        const auto value = parse_double(t[k]);
+        if (!value) {
+            return false;
+        }
+        out[k] = *value;
+    }
+    return true;
 }
 
-Mat3 read_cell(std::istream& stream, const std::string& origin, double scale) {
-    Mat3 cell;
-    for (std::size_t row = 0; row < 3; ++row) {
-        const auto fields = split(require_line(stream, origin, "cell"));
-        if (fields.size() < 3) {
-            throw ExtxyzError("vasp: '" + origin + "': a cell vector is three numbers, not " +
-                              std::to_string(fields.size()));
+/// Optional velocity block after the coordinates. Returns 3N values in
+/// Cartesian units, or empty when there is none. A predictor-corrector block
+/// (or anything else that does not start with numbers or a mode line) is
+/// skipped silently, and so is a block that is malformed or short: the read
+/// still succeeds, without velocities.
+std::vector<double> read_velocities(const Lines& lines, std::size_t i, const Header& h,
+                                    std::size_t n) {
+    i = skip_blank(lines, i);
+    // Lattice-velocity block from VASP MD runs: skip it up to the next blank line.
+    if (i < lines.size() && (first_char(lines[i]) == 'l' || first_char(lines[i]) == 'L')) {
+        while (i < lines.size() && !is_blank(lines[i])) {
+            ++i;
         }
-        for (std::size_t column = 0; column < 3; ++column) {
-            cell.m[3 * row + column] = scale * to_double(fields[column], origin, "cell vector");
+        i = skip_blank(lines, i);
+    }
+    if (i >= lines.size()) {
+        return {};
+    }
+
+    bool direct = false;
+    if (!parse_double(tokens(lines[i]).front())) {
+        // A mode line: c/C/k/K is Cartesian, d/D is Direct, anything else is not ours.
+        switch (first_char(lines[i])) {
+            case 'c':
+            case 'C':
+            case 'k':
+            case 'K':
+                break;
+            case 'd':
+            case 'D':
+                direct = true;
+                break;
+            default:
+                return {};
+        }
+        ++i;
+    }
+
+    std::vector<double> v(3 * n);
+    for (std::size_t a = 0; a < n; ++a) {
+        if (i >= lines.size() || !try_vec3(lines[i], v.data() + 3 * a)) {
+            return {};
+        }
+        ++i;
+    }
+    if (direct) {
+        for (std::size_t a = 0; a < n; ++a) {
+            const Vec3 cart = to_cartesian(h, Vec3::load(v.data() + 3 * a));
+            cart.store(v.data() + 3 * a);
         }
     }
-    return cell;
+    return v;
 }
 
-/// The species list and the count list, expanded into one symbol per atom.
-std::vector<std::string> expand_species(const std::vector<std::string>& names,
-                                        const std::vector<std::string>& counts,
-                                        const std::string& origin) {
-    if (names.size() != counts.size()) {
-        throw ExtxyzError("vasp: '" + origin + "': " + std::to_string(names.size()) +
-                          " species but " + std::to_string(counts.size()) +
-                          " counts; they have to line up");
-    }
-    std::vector<std::string> symbols;
-    for (std::size_t k = 0; k < names.size(); ++k) {
-        const long count = to_long(counts[k], origin, "atom count");
-        if (count < 0) {
-            throw ExtxyzError("vasp: '" + origin + "': a negative atom count");
+/// Builds the Atoms for one frame. Species blocks expand to per-atom labels,
+/// atomic numbers and (optionally) selective-dynamics flags.
+Atoms make_atoms(const Header& h, const std::vector<double>& coords, bool cartesian,
+                 const std::vector<std::int64_t>& flags) {
+    std::vector<int> numbers;
+    std::vector<std::string> labels;
+    numbers.reserve(h.size());
+    labels.reserve(h.size());
+    for (std::size_t s = 0; s < h.species.size(); ++s) {
+        for (std::size_t c = 0; c < h.counts[s]; ++c) {
+            numbers.push_back(h.numbers[s]);
+            labels.push_back(h.species[s]);
         }
-        symbols.insert(symbols.end(), static_cast<std::size_t>(count), names[k]);
     }
-    return symbols;
+
+    const std::size_t n = numbers.size();
+    std::vector<double> positions(3 * n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const Vec3 x = Vec3::load(coords.data() + 3 * i);
+        const Vec3 r = cartesian ? Vec3(x.x * h.factor[0], x.y * h.factor[1], x.z * h.factor[2])
+                                 : to_cartesian(h, x);
+        r.store(positions.data() + 3 * i);
+    }
+
+    const Mat3 lattice = Mat3::from_rows(h.lattice[0], h.lattice[1], h.lattice[2]);
+    Atoms atoms(std::move(numbers), std::move(positions), Cell(lattice, {true, true, true}));
+    atoms.set_pbc(true);
+    atoms.set_string_array("labels", labels);
+    if (!flags.empty()) {
+        atoms.set_int_array("selective_dynamics", flags, 3);
+    }
+    atoms.info()[std::string("comment")] = Value(h.comment);
+    return atoms;
 }
 
-void append_double(std::string& out, double value, int precision) {
-    std::ostringstream stream;
-    stream << std::setprecision(precision) << std::fixed << value;
-    out += stream.str();
+/// Shortest decimal that reads back to the same double.
+void append_double(std::string& out, double value) {
+    char buf[64];
+    const auto [end, ec] = std::to_chars(buf, buf + sizeof buf, value);
+    if (ec == std::errc{}) {
+        out.append(buf, end);
+    }
 }
+
+void append_vec(std::string& out, const double* p) {
+    for (std::size_t k = 0; k < 3; ++k) {
+        out += ' ';
+        append_double(out, p[k]);
+    }
+}
+
+/// An XDATCAR frame line: `Direct configuration=     1` (VASP writes this,
+/// also `Cartesian configuration`), or the bare `configuration=N`. Matched on
+/// the leading words, case-insensitively, so a comment line that merely
+/// contains the word is not one. `configuration 2` (no '=') is a comment.
+bool is_configuration_line(std::string_view line) {
+    const Tokens t = tokens(line);
+    if (t.empty()) {
+        return false;
+    }
+    std::string first(t[0]);
+    for (char& c : first) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (first.starts_with("configuration=")) {
+        return true;
+    }
+    if (t.size() < 2 || (first != "direct" && first != "cartesian")) {
+        return false;
+    }
+    std::string second(t[1]);
+    for (char& c : second) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return second.starts_with("configuration");
+}
+
+/// Atoms grouped for writing: each group is one species line entry.
+struct Group {
+    std::string name;
+    std::vector<std::size_t> atoms;
+};
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// POSCAR / CONTCAR
-// ---------------------------------------------------------------------------
+Atoms read_poscar(std::string_view text, const PoscarReadOptions& options) {
+    const Lines lines = split_lines(text);
+    const Header h = parse_header(lines, 0, options);
+    const std::size_t n = h.size();
 
-Atoms parse_poscar(std::istream& stream, const std::string& origin) {
-    const std::string comment = require_line(stream, origin, "comment line");
-
-    const auto scale_fields = split(require_line(stream, origin, "scale factor"));
-    if (scale_fields.empty()) {
-        throw ExtxyzError("vasp: '" + origin + "': no scale factor on line 2");
-    }
-    double scale = to_double(scale_fields[0], origin, "scale factor");
-
-    Mat3 cell = read_cell(stream, origin, 1.0);
-    if (scale < 0.0) {
-        // A negative scale is a target volume, not a length: VASP reads it as
-        // the volume the cell should be scaled to have.
-        const double volume = std::abs(cell.determinant());
-        scale = std::cbrt(-scale / volume);
-    }
-    for (double& element : cell.m) {
-        element *= scale;
-    }
-
-    auto first = split(require_line(stream, origin, "species or counts"));
-    std::vector<std::string> names;
-    std::vector<std::string> counts;
-    if (all_are_symbols(first)) {
-        names = std::move(first);
-        counts = split(require_line(stream, origin, "atom counts"));
-    } else {
-        // Version 4: no species line. The comment is the only place left that
-        // might name them, and every code that writes such a file puts them
-        // there - but guessing beyond that would invent an answer.
-        counts = std::move(first);
-        const auto from_comment = split(comment);
-        if (!all_are_symbols(from_comment)) {
-            throw ExtxyzError(
-                "vasp: '" + origin +
-                "' has no species line, and its comment line does not name the elements either. "
-                "This is a VASP 4 file whose species only exist in its POTCAR; add a species "
-                "line (VASP 5 style) above the counts.");
-        }
-        names = from_comment;
-    }
-
-    std::vector<std::string> symbols = expand_species(names, counts, origin);
-    const std::size_t count = symbols.size();
-
-    std::string mode = require_line(stream, origin, "coordinate mode");
+    std::size_t i = h.next;
     bool selective = false;
-    if (!mode.empty() && (mode[0] == 'S' || mode[0] == 's')) {
+    const char first = first_char(line_at(lines, i, "coordinate mode line"));
+    if (first == 's' || first == 'S') {
         selective = true;
-        mode = require_line(stream, origin, "coordinate mode");
-    }
-    const bool direct = mode.empty() || mode[0] == 'D' || mode[0] == 'd' || mode[0] == '\r';
-
-    std::vector<double> coordinates(3 * count, 0.0);
-    std::vector<std::size_t> fixed;
-    for (std::size_t atom = 0; atom < count; ++atom) {
-        const auto fields = split(require_line(stream, origin, "position"));
-        if (fields.size() < 3) {
-            throw ExtxyzError("vasp: '" + origin + "': position " + std::to_string(atom + 1) +
-                              " has " + std::to_string(fields.size()) + " numbers, not three");
-        }
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            coordinates[3 * atom + axis] = to_double(fields[axis], origin, "position");
-        }
-        // Selective dynamics: three T/F flags. An atom free along some axes but
-        // not others is a FixCartesian rather than a FixAtoms; until that
-        // exists here, anything not wholly free is held wholly fixed, which is
-        // the conservative reading - it never lets an atom move that VASP was
-        // holding still.
-        if (selective && fields.size() >= 6) {
-            const bool free = fields[3][0] == 'T' || fields[3][0] == 't';
-            const bool free_y = fields[4][0] == 'T' || fields[4][0] == 't';
-            const bool free_z = fields[5][0] == 'T' || fields[5][0] == 't';
-            if (!(free && free_y && free_z)) {
-                fixed.push_back(atom);
-            }
-        }
+        ++i;
     }
 
-    Atoms atoms(symbols, std::vector<double>(3 * count, 0.0));
-    atoms.set_cell(cell);
-    atoms.set_pbc(true);
-    if (direct) {
-        atoms.set_scaled_positions(coordinates);
-    } else {
-        for (double& value : coordinates) {
-            value *= scale;
-        }
-        atoms.set_positions(coordinates);
+    const std::string_view mode_line = line_at(lines, i, "coordinate mode line");
+    const char mode = first_char(mode_line);
+    if (mode == '\0') {
+        fail(i, "empty coordinate mode line");
     }
-    if (!fixed.empty()) {
-        atoms.add_constraint(std::make_shared<FixAtoms>(std::move(fixed)));
+    const bool cartesian = mode == 'c' || mode == 'C' || mode == 'k' || mode == 'K';
+    ++i;
+
+    std::vector<double> coords(3 * n);
+    std::vector<std::int64_t> flags(selective ? 3 * n : 0);
+    for (std::size_t a = 0; a < n; ++a) {
+        if (i >= lines.size()) {
+            fail(lines.size() - 1, "expected " + std::to_string(n) + " position lines, found " +
+                                       std::to_string(a));
+        }
+        parse_position(lines[i], i, selective, coords.data() + 3 * a,
+                       selective ? flags.data() + 3 * a : nullptr);
+        ++i;
+    }
+
+    Atoms atoms = make_atoms(h, coords, cartesian, flags);
+    const std::vector<double> velocities = read_velocities(lines, i, h, n);
+    if (!velocities.empty()) {
+        atoms.set_velocities(velocities);
     }
     return atoms;
 }
 
-Atoms read_poscar(const std::string& path) {
-    std::ifstream stream(path);
-    if (!stream) {
-        throw ExtxyzError("vasp: cannot open '" + path + "'");
-    }
-    return parse_poscar(stream, path);
-}
-
-std::string poscar_to_string(const Atoms& atoms, PoscarOptions options) {
-    const std::size_t count = atoms.size();
-    if (count == 0) {
-        throw ExtxyzError("vasp: a POSCAR needs at least one atom");
-    }
-    if (std::abs(atoms.cell().matrix().determinant()) < 1e-12) {
-        throw ExtxyzError("vasp: a POSCAR needs a cell; this structure has none");
-    }
-
-    // VASP groups atoms by species, and the counts line says how many of each.
-    // The order on file therefore need not be the order in memory, so the
-    // grouping is worked out first and everything else follows it.
-    std::vector<std::string> order;
-    std::vector<std::vector<std::size_t>> groups;
+std::string write_poscar(const Atoms& atoms, const PoscarWriteOptions& options) {
+    const std::size_t n = atoms.size();
+    // A label is written only if it resolves to the atom's own element and
+    // would survive the species line as one token; otherwise the symbol is.
     const std::vector<std::string> symbols = atoms.symbols();
-    for (std::size_t atom = 0; atom < count; ++atom) {
-        const auto found = std::find(order.begin(), order.end(), symbols[atom]);
-        if (found == order.end()) {
-            order.push_back(symbols[atom]);
-            groups.push_back({atom});
-        } else {
-            groups[static_cast<std::size_t>(found - order.begin())].push_back(atom);
-        }
-    }
-
-    std::string comment = options.comment;
-    if (comment.empty()) {
-        for (std::size_t k = 0; k < order.size(); ++k) {
-            comment += (k ? " " : "");
-            comment += order[k] + std::to_string(groups[k].size());
-        }
-    }
-
-    std::string out = comment + "\n1.0\n";
-    const Mat3& cell = atoms.cell().matrix();
-    for (std::size_t row = 0; row < 3; ++row) {
-        for (std::size_t column = 0; column < 3; ++column) {
-            out += "  ";
-            append_double(out, cell.m[3 * row + column], options.precision);
-        }
-        out += '\n';
-    }
-    for (std::size_t k = 0; k < order.size(); ++k) {
-        out += (k ? " " : "") + order[k];
-    }
-    out += '\n';
-    for (std::size_t k = 0; k < order.size(); ++k) {
-        out += (k ? " " : "") + std::to_string(groups[k].size());
-    }
-    out += '\n';
-
-    // Which atoms are held still, so the flags can be written per atom.
-    std::vector<bool> fixed(count, false);
-    bool any_fixed = false;
-    if (options.selective_dynamics) {
-        for (const auto& constraint : atoms.constraints()) {
-            for (const std::size_t index : constraint->indices()) {
-                if (index < count) {
-                    fixed[index] = true;
-                    any_fixed = true;
-                }
+    std::vector<std::string> names = symbols;
+    if (options.write_labels) {
+        const std::vector<std::string> labels = atoms.labels();
+        const std::vector<int> numbers = atoms.numbers();
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::string& label = labels[i];
+            const bool one_token = !label.empty() && tokens(label).size() == 1 &&
+                                   label.find_first_of("#!") == std::string::npos;
+            if (one_token && try_number_from_label(label) == numbers[i]) {
+                names[i] = label;
             }
         }
     }
-    if (any_fixed) {
+
+    std::vector<Group> groups;
+    if (options.sort) {
+        std::map<std::string, std::size_t> index;
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto [it, inserted] = index.try_emplace(names[i], groups.size());
+            if (inserted) {
+                groups.push_back({names[i], {}});
+            }
+            groups[it->second].atoms.push_back(i);
+        }
+    } else {
+        for (std::size_t i = 0; i < n; ++i) {
+            if (groups.empty() || groups.back().name != names[i]) {
+                groups.push_back({names[i], {}});
+            }
+            groups.back().atoms.push_back(i);
+        }
+    }
+    std::vector<std::size_t> order;
+    order.reserve(n);
+    for (const Group& g : groups) {
+        order.insert(order.end(), g.atoms.begin(), g.atoms.end());
+    }
+
+    const bool selective = atoms.has_int_array("selective_dynamics");
+    if (selective && atoms.int_array("selective_dynamics").ncols != 3) {
+        throw FormatError("vasp: the selective_dynamics array must have 3 columns");
+    }
+    if (options.direct && !atoms.cell().is_invertible()) {
+        throw FormatError("vasp: Direct coordinates need an invertible cell; use direct=false");
+    }
+
+    std::string comment = options.comment;
+    if (comment.empty() && !options.vasp5) {
+        // A VASP 4 file has no species line; by convention (and for our own
+        // reader) the element symbols go on the comment line instead, one per
+        // count. Plain symbols, since VASP 4 era tools know nothing of labels.
+        for (std::size_t g = 0; g < groups.size(); ++g) {
+            comment += (g == 0 ? "" : " ") + atoms.symbol(groups[g].atoms.front());
+        }
+    }
+    if (comment.empty()) {
+        const Value* c = atoms.info().find("comment");
+        if (c != nullptr && c->is_string()) {
+            comment = c->as_string();
+        }
+    }
+    if (comment.empty()) {
+        comment = atoms.formula();
+    }
+    std::replace(comment.begin(), comment.end(), '\n', ' ');
+    std::replace(comment.begin(), comment.end(), '\r', ' ');
+
+    std::string out = comment + "\n1.0\n";
+    for (std::size_t r = 0; r < 3; ++r) {
+        const Vec3 v = atoms.cell().vector(r);
+        const double row[3] = {v.x, v.y, v.z};
+        append_vec(out, row);
+        out += '\n';
+    }
+    if (options.vasp5) {
+        for (std::size_t g = 0; g < groups.size(); ++g) {
+            out += (g == 0 ? "" : " ") + groups[g].name;
+        }
+        out += '\n';
+    }
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        out += (g == 0 ? "" : " ") + std::to_string(groups[g].atoms.size());
+    }
+    out += '\n';
+
+    if (selective) {
         out += "Selective dynamics\n";
     }
     out += options.direct ? "Direct\n" : "Cartesian\n";
 
-    const std::vector<double> coordinates =
-        options.direct ? atoms.scaled_positions() : atoms.positions();
-    for (const auto& group : groups) {
-        for (const std::size_t atom : group) {
-            for (std::size_t axis = 0; axis < 3; ++axis) {
-                out += "  ";
-                append_double(out, coordinates[3 * atom + axis], options.precision);
+    const std::vector<double> frac = options.direct ? atoms.scaled_positions() : std::vector<double>{};
+    const std::vector<double>& cart = atoms.positions();
+    const std::vector<std::int64_t>* flags = selective ? &atoms.int_array("selective_dynamics").data : nullptr;
+    for (const std::size_t i : order) {
+        append_vec(out, options.direct ? frac.data() + 3 * i : cart.data() + 3 * i);
+        if (flags != nullptr) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                out += (*flags)[3 * i + k] != 0 ? " T" : " F";
             }
-            if (any_fixed) {
-                out += fixed[atom] ? "   F   F   F" : "   T   T   T";
-            }
+        }
+        out += '\n';
+    }
+
+    if (atoms.has_momenta()) {
+        const std::vector<double> velocities = atoms.velocities();
+        out += '\n';
+        for (const std::size_t i : order) {
+            append_vec(out, velocities.data() + 3 * i);
             out += '\n';
         }
     }
     return out;
 }
 
-void write_poscar(const std::string& path, const Atoms& atoms, PoscarOptions options) {
-    std::ofstream stream(path);
-    if (!stream) {
-        throw ExtxyzError("vasp: cannot write '" + path + "'");
-    }
-    stream << poscar_to_string(atoms, std::move(options));
-    if (!stream) {
-        throw ExtxyzError("vasp: writing '" + path + "' failed");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// XDATCAR
-// ---------------------------------------------------------------------------
-
-std::vector<Atoms> read_xdatcar(const std::string& path) {
-    std::ifstream stream(path);
-    if (!stream) {
-        throw ExtxyzError("vasp: cannot open '" + path + "'");
-    }
-
+std::vector<Atoms> read_xdatcar(std::string_view text, const PoscarReadOptions& options) {
+    const Lines lines = split_lines(text);
+    // A file cut off mid-write ends in a line without its newline.
+    const bool may_be_cut = !text.empty() && text.back() != '\n';
     std::vector<Atoms> frames;
-    // The header appears once for a fixed cell and once per frame for a
-    // variable one. Reading it whenever the next line is not a
-    // "Direct configuration=" marker handles both without being told which.
-    Mat3 cell;
-    std::vector<std::string> symbols;
-    bool have_header = false;
+    std::optional<Header> header;
+    bool truncated = false;
+    std::size_t i = skip_blank(lines, 0);
 
-    std::string line;
-    while (std::getline(stream, line)) {
-        const auto fields = split(line);
-        if (fields.empty()) {
-            continue;
-        }
-
-        const bool is_marker = line.find("configuration=") != std::string::npos ||
-                               (fields[0] == "Direct" && fields.size() <= 2);
-        if (!is_marker) {
-            // A header block: comment, scale, cell, species, counts.
-            const auto scale_fields = split(require_line(stream, path, "scale factor"));
-            if (scale_fields.empty()) {
-                throw ExtxyzError("vasp: '" + path + "': no scale factor after the comment");
+    while (i < lines.size() && !truncated) {
+        // Fixed-cell files have one header and many configuration blocks;
+        // variable-cell files repeat the header before each block.
+        const std::size_t start = i;
+        if (!header || !is_configuration_line(lines[i])) {
+            // A header is at least six lines, then the configuration line.
+            if (header && lines.size() - start < 7 + header->size()) {
+                truncated = true;
+                break;
             }
-            const double scale = to_double(scale_fields[0], path, "scale factor");
-            cell = read_cell(stream, path, scale);
-            const auto names = split(require_line(stream, path, "species"));
-            if (!all_are_symbols(names)) {
-                throw ExtxyzError("vasp: '" + path + "' does not name its species; an XDATCAR "
-                                  "without a species line cannot be read on its own");
+            header = parse_header(lines, i, options);
+            i = skip_blank(lines, header->next);
+            if (i >= lines.size()) {
+                truncated = true;
+                break;
             }
-            const auto counts = split(require_line(stream, path, "atom counts"));
-            symbols = expand_species(names, counts, path);
-            have_header = true;
-            continue;
-        }
-
-        if (!have_header) {
-            throw ExtxyzError("vasp: '" + path + "' starts with a frame marker but no header");
-        }
-
-        std::vector<double> scaled(3 * symbols.size(), 0.0);
-        for (std::size_t atom = 0; atom < symbols.size(); ++atom) {
-            const auto position = split(require_line(stream, path, "position"));
-            if (position.size() < 3) {
-                throw ExtxyzError("vasp: '" + path + "': frame " +
-                                  std::to_string(frames.size() + 1) + " is short of positions");
-            }
-            for (std::size_t axis = 0; axis < 3; ++axis) {
-                scaled[3 * atom + axis] = to_double(position[axis], path, "position");
+            if (!is_configuration_line(lines[i])) {
+                fail(i, "expected a 'Direct configuration=' line");
             }
         }
+        ++i;
 
-        Atoms frame(symbols, std::vector<double>(3 * symbols.size(), 0.0));
-        frame.set_cell(cell);
-        frame.set_pbc(true);
-        frame.set_scaled_positions(scaled);
-        frames.push_back(std::move(frame));
+        const std::size_t n = header->size();
+        std::vector<double> coords(3 * n);
+        for (std::size_t a = 0; a < n; ++a) {
+            if (i >= lines.size()) {
+                truncated = true;
+                break;
+            }
+            double* xyz = coords.data() + 3 * a;
+            if (!try_vec3(lines[i], xyz)) {
+                if (may_be_cut && i + 1 == lines.size()) {
+                    truncated = true;
+                    break;
+                }
+                parse_position(lines[i], i, false, xyz, nullptr);  // throws, naming the line
+            }
+            ++i;
+        }
+        if (truncated) {
+            break;  // an incomplete last frame is dropped
+        }
+        frames.push_back(make_atoms(*header, coords, false, {}));
+        i = skip_blank(lines, i);
     }
 
     if (frames.empty()) {
-        throw ExtxyzError("vasp: '" + path + "' holds no frames");
+        throw FormatError("vasp: XDATCAR has no configurations");
     }
-    return frames;
-}
-
-// ---------------------------------------------------------------------------
-// OUTCAR
-// ---------------------------------------------------------------------------
-
-std::vector<Atoms> read_outcar(const std::string& path) {
-    std::ifstream stream(path);
-    if (!stream) {
-        throw ExtxyzError("vasp: cannot open '" + path + "'");
-    }
-
-    std::vector<std::string> species;   // in POTCAR order
-    std::vector<std::size_t> counts;
-    std::vector<std::string> symbols;
-    Mat3 cell;
-    bool have_cell = false;
-
-    std::vector<Atoms> frames;
-    std::vector<double> positions;
-    std::vector<double> forces;
-    std::optional<std::array<double, 6>> stress;
-    std::optional<double> energy;
-    std::optional<double> free_energy;
-
-    const auto flush = [&]() {
-        if (positions.empty() || symbols.empty()) {
-            return;
-        }
-        Atoms atoms(symbols, positions);
-        if (have_cell) {
-            atoms.set_cell(cell);
-            atoms.set_pbc(true);
-        }
-        Results results;
-        results.energy = energy;
-        results.free_energy = free_energy ? free_energy : energy;
-        if (forces.size() == positions.size()) {
-            results.forces = forces;
-        }
-        results.stress = stress;
-        if (results.energy || !results.forces.empty()) {
-            atoms.set_calculator(std::make_shared<SinglePointCalculator>(atoms, results));
-        }
-        frames.push_back(std::move(atoms));
-        positions.clear();
-        forces.clear();
-        stress.reset();
-        energy.reset();
-        free_energy.reset();
-    };
-
-    std::string line;
-    while (std::getline(stream, line)) {
-        // The species, one "VRHFIN =Cu:" line each, in POTCAR order.
-        if (line.find("VRHFIN") != std::string::npos) {
-            const std::size_t equals = line.find('=');
-            if (equals != std::string::npos) {
-                std::string symbol;
-                for (std::size_t k = equals + 1; k < line.size(); ++k) {
-                    if (std::isalpha(static_cast<unsigned char>(line[k]))) {
-                        symbol += line[k];
-                    } else if (!symbol.empty()) {
-                        break;
-                    }
-                }
-                if (try_number_from_symbol(symbol) > 0) {
-                    species.push_back(symbol);
-                }
-            }
-            continue;
-        }
-
-        if (line.find("ions per type") != std::string::npos) {
-            const std::size_t equals = line.find('=');
-            if (equals != std::string::npos) {
-                counts.clear();
-                for (const auto& field : split(line.substr(equals + 1))) {
-                    counts.push_back(static_cast<std::size_t>(to_long(field, path, "ion count")));
-                }
-            }
-            if (species.size() == counts.size()) {
-                symbols.clear();
-                for (std::size_t k = 0; k < species.size(); ++k) {
-                    symbols.insert(symbols.end(), counts[k], species[k]);
-                }
-            }
-            continue;
-        }
-
-        if (line.find("direct lattice vectors") != std::string::npos) {
-            for (std::size_t row = 0; row < 3; ++row) {
-                const auto fields = split(require_line(stream, path, "lattice vector"));
-                if (fields.size() < 3) {
-                    break;
-                }
-                for (std::size_t column = 0; column < 3; ++column) {
-                    cell.m[3 * row + column] = to_double(fields[column], path, "lattice vector");
-                }
-                have_cell = true;
-            }
-            continue;
-        }
-
-        // "in kB" gives the stress in kilobar; VASP's sign is the opposite of
-        // the one used here, and 1 kB = 0.1 GPa.
-        if (line.find("in kB") != std::string::npos) {
-            const auto fields = split(line);
-            if (fields.size() >= 8) {
-                std::array<double, 6> voigt{};
-                const double kbar_to_ev_per_a3 = 0.1 * units::GPa;
-                // XX YY ZZ XY YZ ZX in the file; xx yy zz yz xz xy here.
-                const double xx = to_double(fields[2], path, "stress");
-                const double yy = to_double(fields[3], path, "stress");
-                const double zz = to_double(fields[4], path, "stress");
-                const double xy = to_double(fields[5], path, "stress");
-                const double yz = to_double(fields[6], path, "stress");
-                const double zx = to_double(fields[7], path, "stress");
-                voigt = {xx, yy, zz, yz, zx, xy};
-                for (double& value : voigt) {
-                    value *= -kbar_to_ev_per_a3;
-                }
-                stress = voigt;
-            }
-            continue;
-        }
-
-        if (line.find("TOTAL-FORCE") != std::string::npos) {
-            require_line(stream, path, "force table rule");
-            positions.clear();
-            forces.clear();
-            while (std::getline(stream, line)) {
-                const auto fields = split(line);
-                if (fields.size() < 6) {
-                    break;
-                }
-                for (std::size_t axis = 0; axis < 3; ++axis) {
-                    positions.push_back(to_double(fields[axis], path, "position"));
-                    forces.push_back(to_double(fields[axis + 3], path, "force"));
-                }
-            }
-            continue;
-        }
-
-        if (line.find("free  energy   TOTEN") != std::string::npos) {
-            const auto fields = split(line);
-            if (fields.size() >= 5) {
-                free_energy = to_double(fields[4], path, "free energy");
-            }
-            continue;
-        }
-
-        // "energy without entropy = X energy(sigma->0) = Y": the second is
-        // the extrapolated one, which is what an energy should mean here.
-        if (line.find("energy(sigma->0)") != std::string::npos) {
-            const std::size_t marker = line.rfind('=');
-            if (marker != std::string::npos) {
-                const auto fields = split(line.substr(marker + 1));
-                if (!fields.empty()) {
-                    energy = to_double(fields[0], path, "energy");
-                }
-            }
-            flush();
-            continue;
-        }
-    }
-    flush();
-
-    if (frames.empty()) {
-        throw ExtxyzError("vasp: '" + path + "' holds no completed ionic steps");
+    if (truncated) {
+        frames.back().info()[std::string("truncated")] = Value(true);
     }
     return frames;
 }

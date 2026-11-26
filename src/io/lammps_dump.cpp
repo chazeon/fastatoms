@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "fastatoms/formats/lammps.hpp"
+#include "fastatoms/io/lammps.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,7 +16,7 @@
 #include "fastatoms/core/elements.hpp"
 #include "lammps_common.hpp"
 
-namespace fastatoms::formats {
+namespace fastatoms::io {
 namespace {
 
 using namespace lammps_common;
@@ -529,4 +529,4 @@ std::vector<Atoms> read_lammps_dump(std::string_view text, const LammpsDumpReadO
     return frames;
 }
 
-}  // namespace fastatoms::formats
+}  // namespace fastatoms::io

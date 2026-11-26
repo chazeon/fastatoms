@@ -20,7 +20,7 @@
 
 #include "fastatoms/core/atoms.hpp"
 
-namespace fastatoms::formats {
+namespace fastatoms::io {
 
 /// LAMMPS type -> label. The label sets "labels" and, through
 /// `number_from_label`, the element ("Fe1" and "Fe2" may both be iron).
@@ -51,10 +51,12 @@ struct LammpsDataWriteOptions {
 struct LammpsDumpReadOptions {
     LammpsTypeMap types{};  ///< "types"; without it and without an element column,
                             ///< type k becomes the dummy element X with label "k"
-    bool unwrap{true};      ///< "unwrap": prefer xu/xsu, or apply ix iy iz
+    bool unwrap{false};     ///< "unwrap": apply the ix iy iz image flags to x, y, z
+                            ///< columns. Off (default), x, y, z are taken as written, as
+                            ///< ASE does; xu and xsu are unwrapped whatever this is
 };
 
 [[nodiscard]] std::vector<Atoms> read_lammps_dump(std::string_view text,
                                                   const LammpsDumpReadOptions& options = {});
 
-}  // namespace fastatoms::formats
+}  // namespace fastatoms::io

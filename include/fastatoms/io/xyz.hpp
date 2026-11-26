@@ -16,7 +16,7 @@
 
 #include "fastatoms/core/atoms.hpp"
 
-namespace fastatoms::formats {
+namespace fastatoms::io {
 
 [[nodiscard]] std::vector<Atoms> read_xyz(std::string_view text);
 
@@ -29,4 +29,4 @@ struct XyzWriteOptions {
 [[nodiscard]] std::string write_xyz(const std::vector<Atoms>& frames,
                                     const XyzWriteOptions& options = {});
 
-}  // namespace fastatoms::formats
+}  // namespace fastatoms::io

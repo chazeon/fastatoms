@@ -30,7 +30,7 @@
 #include "fastatoms/core/atoms.hpp"
 #include "fastatoms/core/value.hpp"
 
-namespace fastatoms::formats {
+namespace fastatoms::io {
 
 /// Malformed or unsupported input. The message names the line when known.
 class FormatError : public std::runtime_error {
@@ -63,4 +63,4 @@ public:
 /// Whether `format` can be written (not every reader has a writer).
 [[nodiscard]] bool can_write(const std::string& format);
 
-}  // namespace fastatoms::formats
+}  // namespace fastatoms::io

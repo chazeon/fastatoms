@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 #include <algorithm>
 
-#include "fastatoms/formats/format.hpp"
+#include "fastatoms/io/format.hpp"
 #include "testing.hpp"
 
 using namespace fastatoms;
-using namespace fastatoms::formats;
+using namespace fastatoms::io;
 
 FA_TEST(guess_format_from_names) {
     const auto available = available_formats();

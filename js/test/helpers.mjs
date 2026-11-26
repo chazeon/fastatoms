@@ -14,8 +14,7 @@ export const REPO_DATA = join(here, "..", "..", "tests", "data");
  * repository (../gemmy); override with FASTATOMS_GEMMY_EXAMPLES. Tests that
  * need a file skip when it is absent.
  */
-export const GEMMY_EXAMPLES =
-  process.env.FASTATOMS_GEMMY_EXAMPLES ?? join(here, "..", "..", "..", "gemmy", "examples");
+export const GEMMY_EXAMPLES = process.env.FASTATOMS_GEMMY_EXAMPLES ?? join(here, "..", "..", "..", "gemmy", "examples");
 
 export function gemmyPath(relative) {
   return join(GEMMY_EXAMPLES, relative);

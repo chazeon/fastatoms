@@ -1,69 +1,44 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 
-/// VASP's own file formats.
+/// \file vasp.hpp
+/// \brief POSCAR / CONTCAR (read + write) and XDATCAR (read).
 ///
-/// POSCAR and CONTCAR hold one structure, XDATCAR a trajectory, OUTCAR the
-/// results of a run. Between them they are how most plane-wave work arrives,
-/// and reading them here means a VASP calculation can be picked up without a
-/// conversion step - including the energies and forces, which come back as a
-/// `SinglePointCalculator` the same way an extended XYZ frame's do.
+/// See PLAN.md §4 "VASP" for every edge case the reader must accept. In short:
+/// VASP 4 and 5+, labels such as Fe1 / Fe_pv / Fe/hash on the species line
+/// (kept in "labels", element via `number_from_label`), negative (volume) and
+/// three-component scale factors, selective dynamics per axis, Direct /
+/// Cartesian keyed on the first non-blank letter, an optional velocity block,
+/// CRLF, Fortran `D` exponents.
 
-#include <iosfwd>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "fastatoms/core/atoms.hpp"
-#include "fastatoms/io/extxyz.hpp"
 
 namespace fastatoms::io {
 
-/// How to write a POSCAR.
-struct PoscarOptions {
-    /// Positions as fractions of the cell vectors rather than in ångström.
-    ///
-    /// Direct is what VASP itself writes and what most tooling expects, so it
-    /// is the default; Cartesian is available because some workflows diff
-    /// against it.
-    bool direct{true};
-
-    /// A comment for the first line. Empty means the chemical formula, which
-    /// is more use than "POSCAR" when a directory holds a dozen of them.
-    std::string comment{};
-
-    /// Write selective dynamics flags from the structure's constraints, so a
-    /// `FixAtoms` set up here is still fixed when VASP runs.
-    bool selective_dynamics{true};
-
-    int precision{16};
+struct PoscarReadOptions {
+    /// Species for a VASP 4 file (no species line), one entry per count.
+    /// Ignored when the file has a species line. Option key: "species".
+    std::vector<std::string> species{};
 };
 
-/// Read a POSCAR or CONTCAR.
-///
-/// VASP 5 and later name the species on line 6; VASP 4 did not, and left them
-/// to be guessed from the POTCAR. A version-4 file is read, with the species
-/// taken from the comment line when that parses as a list of symbols - which
-/// is what every code that writes them does - and rejected otherwise rather
-/// than guessed at.
-[[nodiscard]] Atoms read_poscar(const std::string& path);
-[[nodiscard]] Atoms parse_poscar(std::istream& stream, const std::string& origin = "<string>");
+struct PoscarWriteOptions {
+    bool direct{true};              ///< "direct"
+    bool write_labels{true};        ///< "labels": species line from "labels", else symbols
+    bool vasp5{true};               ///< "vasp5": false omits the species line
+    bool sort{false};               ///< "sort": group by label in first-appearance order;
+                                    ///< false groups only consecutive runs (keeps order)
+    std::string comment{};          ///< "comment": empty -> info["comment"] or the formula
+};
 
-/// Write a POSCAR.
-void write_poscar(const std::string& path, const Atoms& atoms, PoscarOptions options = {});
-[[nodiscard]] std::string poscar_to_string(const Atoms& atoms, PoscarOptions options = {});
+[[nodiscard]] Atoms read_poscar(std::string_view text, const PoscarReadOptions& options = {});
+[[nodiscard]] std::string write_poscar(const Atoms& atoms, const PoscarWriteOptions& options = {});
 
-/// Read every frame of an XDATCAR.
-///
-/// The header is written once and the frames follow it, so the cell and the
-/// species come from the top of the file and only the positions vary - unless
-/// the run was a variable-cell relaxation, which repeats the header per frame.
-/// Both layouts are handled.
-[[nodiscard]] std::vector<Atoms> read_xdatcar(const std::string& path);
-
-/// Read the structures and results of an OUTCAR.
-///
-/// One frame per ionic step, each carrying the energy, the forces and the
-/// stress that VASP reported for it, so a relaxation can be replayed and
-/// plotted without re-running anything.
-[[nodiscard]] std::vector<Atoms> read_outcar(const std::string& path);
+/// Every frame of an XDATCAR, fixed-cell and variable-cell layouts.
+[[nodiscard]] std::vector<Atoms> read_xdatcar(std::string_view text,
+                                              const PoscarReadOptions& options = {});
 
 }  // namespace fastatoms::io

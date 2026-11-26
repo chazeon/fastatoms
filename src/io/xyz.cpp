@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-#include "fastatoms/formats/xyz.hpp"
+#include "fastatoms/io/xyz.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -17,9 +18,9 @@
 
 #include "fastatoms/core/elements.hpp"
 #include "fastatoms/core/value.hpp"
-#include "fastatoms/formats/format.hpp"
+#include "fastatoms/io/format.hpp"
 
-namespace fastatoms::formats {
+namespace fastatoms::io {
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -186,6 +187,352 @@ std::vector<std::string_view> value_items(std::string_view text) {
     return items;
 }
 
+// ---------------------------------------------------------------------------
+// _JSON values
+// ---------------------------------------------------------------------------
+
+/// Deepest nesting the _JSON reader accepts, so a hostile line cannot exhaust the stack.
+constexpr int kMaxJsonDepth = 256;
+
+int hex_digit(char c) noexcept {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+void append_utf8(std::string& out, std::uint32_t code) {
+    if (code < 0x80) {
+        out += static_cast<char>(code);
+    } else if (code < 0x800) {
+        out += static_cast<char>(0xC0 | (code >> 6));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    } else if (code < 0x10000) {
+        out += static_cast<char>(0xE0 | (code >> 12));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (code >> 18));
+        out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (code & 0x3F));
+    }
+}
+
+/// Reads the JSON text of a "_JSON " value, as Python's json module writes it:
+/// objects, arrays, numbers, strings, true, false, null, and NaN or Infinity.
+class JsonReader {
+public:
+    explicit JsonReader(std::string_view text) : text_(text) {}
+
+    Value document() {
+        Value value = read_value(0);
+        skip_space();
+        if (pos_ != text_.size()) {
+            fail("text after the value");
+        }
+        return value;
+    }
+
+private:
+    [[noreturn]] void fail(const std::string& what) const {
+        throw FormatError("xyz: invalid _JSON value: " + what + " at position " +
+                          std::to_string(pos_ + 1));
+    }
+
+    void skip_space() noexcept {
+        while (pos_ < text_.size() && (is_space(text_[pos_]) || text_[pos_] == '\n')) {
+            ++pos_;
+        }
+    }
+
+    bool consume_char(char c) noexcept {
+        if (pos_ < text_.size() && text_[pos_] == c) {
+            ++pos_;
+            return true;
+        }
+        return false;
+    }
+
+    bool consume_word(std::string_view word) noexcept {
+        if (text_.substr(pos_, word.size()) == word) {
+            pos_ += word.size();
+            return true;
+        }
+        return false;
+    }
+
+    Value read_value(int depth) {
+        if (depth > kMaxJsonDepth) {
+            fail("nested too deeply");
+        }
+        skip_space();
+        if (pos_ >= text_.size()) {
+            fail("missing value");
+        }
+        const char c = text_[pos_];
+        if (c == '[') {
+            return read_list(depth + 1);
+        }
+        if (c == '{') {
+            return read_map(depth + 1);
+        }
+        if (c == '"') {
+            return Value(read_string());
+        }
+        if (consume_word("true")) {
+            return Value(true);
+        }
+        if (consume_word("false")) {
+            return Value(false);
+        }
+        if (consume_word("null")) {
+            return Value();
+        }
+        if (consume_word("NaN")) {
+            return Value(std::numeric_limits<double>::quiet_NaN());
+        }
+        if (consume_word("Infinity")) {
+            return Value(std::numeric_limits<double>::infinity());
+        }
+        if (consume_word("-Infinity")) {
+            return Value(-std::numeric_limits<double>::infinity());
+        }
+        return read_number();
+    }
+
+    Value read_list(int depth) {
+        ++pos_;  // '['
+        Value::List items;
+        skip_space();
+        if (consume_char(']')) {
+            return Value(std::move(items));
+        }
+        while (true) {
+            items.push_back(read_value(depth));
+            skip_space();
+            if (consume_char(']')) {
+                break;
+            }
+            if (!consume_char(',')) {
+                fail("expected ',' or ']'");
+            }
+        }
+        return Value(std::move(items));
+    }
+
+    Value read_map(int depth) {
+        ++pos_;  // '{'
+        Value::Map fields;
+        skip_space();
+        if (consume_char('}')) {
+            return Value(std::move(fields));
+        }
+        while (true) {
+            skip_space();
+            if (pos_ >= text_.size() || text_[pos_] != '"') {
+                fail("expected a string key");
+            }
+            std::string key = read_string();
+            skip_space();
+            if (!consume_char(':')) {
+                fail("expected ':'");
+            }
+            Value value = read_value(depth);
+            const auto existing =
+                std::find_if(fields.begin(), fields.end(),
+                             [&key](const auto& field) { return field.first == key; });
+            if (existing != fields.end()) {
+                existing->second = std::move(value);
+            } else {
+                fields.emplace_back(std::move(key), std::move(value));
+            }
+            skip_space();
+            if (consume_char('}')) {
+                break;
+            }
+            if (!consume_char(',')) {
+                fail("expected ',' or '}'");
+            }
+        }
+        return Value(std::move(fields));
+    }
+
+    std::uint32_t read_hex4() {
+        if (pos_ + 4 > text_.size()) {
+            fail("short \\u escape");
+        }
+        std::uint32_t code = 0;
+        for (int i = 0; i < 4; ++i) {
+            const int digit = hex_digit(text_[pos_++]);
+            if (digit < 0) {
+                fail("bad \\u escape");
+            }
+            code = code * 16 + static_cast<std::uint32_t>(digit);
+        }
+        return code;
+    }
+
+    std::string read_string() {
+        ++pos_;  // opening quote
+        std::string out;
+        while (true) {
+            if (pos_ >= text_.size()) {
+                fail("unterminated string");
+            }
+            const char c = text_[pos_++];
+            if (c == '"') {
+                return out;
+            }
+            if (c != '\\') {
+                out += c;
+                continue;
+            }
+            if (pos_ >= text_.size()) {
+                fail("unterminated escape");
+            }
+            switch (text_[pos_++]) {
+                case '"': out += '"'; break;
+                case '\\': out += '\\'; break;
+                case '/': out += '/'; break;
+                case 'b': out += '\b'; break;
+                case 'f': out += '\f'; break;
+                case 'n': out += '\n'; break;
+                case 'r': out += '\r'; break;
+                case 't': out += '\t'; break;
+                case 'u': {
+                    std::uint32_t code = read_hex4();
+                    if (code >= 0xD800 && code <= 0xDBFF) {
+                        if (!consume_word("\\u")) {
+                            fail("unpaired surrogate");
+                        }
+                        const std::uint32_t low = read_hex4();
+                        if (low < 0xDC00 || low > 0xDFFF) {
+                            fail("unpaired surrogate");
+                        }
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+                        fail("unpaired surrogate");
+                    }
+                    append_utf8(out, code);
+                    break;
+                }
+                default:
+                    fail("bad escape");
+            }
+        }
+    }
+
+    Value read_number() {
+        const std::size_t start = pos_;
+        while (pos_ < text_.size() && (std::isdigit(static_cast<unsigned char>(text_[pos_])) ||
+                                       text_[pos_] == '-' || text_[pos_] == '+' ||
+                                       text_[pos_] == '.' || text_[pos_] == 'e' ||
+                                       text_[pos_] == 'E')) {
+            ++pos_;
+        }
+        const std::string_view token = text_.substr(start, pos_ - start);
+        const char* first = token.data();
+        const char* last = first + token.size();
+        if (token.empty()) {
+            fail("expected a value");
+        }
+        if (token.find_first_of(".eE") == std::string_view::npos) {
+            std::int64_t integer = 0;
+            const auto [ptr, ec] = std::from_chars(first, last, integer);
+            if (ec == std::errc{} && ptr == last) {
+                return Value(integer);
+            }
+        }
+        double real = 0.0;
+        const auto [ptr, ec] = std::from_chars(first, last, real);
+        if (ec != std::errc{} || ptr != last) {
+            fail("bad number '" + std::string(token) + "'");
+        }
+        return Value(real);
+    }
+
+    std::string_view text_;
+    std::size_t pos_{0};
+};
+
+/// Whether a value is a nested list whose leaves are all numbers, and whether any
+/// leaf is a float. A bool or any other leaf makes it false.
+bool numeric_tree(const Value& value, bool& any_float) {
+    if (value.is_list()) {
+        for (const Value& item : value.as_list()) {
+            if (!numeric_tree(item, any_float)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (value.is_float()) {
+        any_float = true;
+        return true;
+    }
+    return value.is_int();
+}
+
+/// The same nested list with every integer leaf as a float.
+Value as_float_leaves(const Value& value) {
+    if (value.is_list()) {
+        Value::List items;
+        for (const Value& item : value.as_list()) {
+            items.push_back(as_float_leaves(item));
+        }
+        return Value(std::move(items));
+    }
+    if (value.is_int()) {
+        return Value(static_cast<double>(value.as_int()));
+    }
+    return value;
+}
+
+/// The value of a "_JSON " text. ASE reads it with numpy, so a numeric array
+/// that holds any float is all floats. Other content keeps its JSON shape.
+Value json_value(std::string_view text) {
+    const Value value = JsonReader(text).document();
+    bool any_float = false;
+    if (numeric_tree(value, any_float) && any_float) {
+        return as_float_leaves(value);
+    }
+    return value;
+}
+
+/// Whether a value is nine numbers, the form of a virial or stress.
+bool is_nine_numbers(const Value& value) {
+    if (!value.is_list() || value.size() != 9) {
+        return false;
+    }
+    for (const Value& item : value.as_list()) {
+        if (!item.is_number()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The 3x3 matrix of nine numbers listed in Fortran order, as ASE reads virial and
+/// stress: row r, column c is number r + 3c.
+Value fortran_matrix(const Value& value) {
+    Value::List rows;
+    for (std::size_t r = 0; r < 3; ++r) {
+        Value::List row;
+        for (std::size_t c = 0; c < 3; ++c) {
+            row.push_back(value.at(r + 3 * c));
+        }
+        rows.emplace_back(std::move(row));
+    }
+    return Value(std::move(rows));
+}
+
 /// A value typed the way ASE types it, whatever its quoting: if every item is
 /// an integer the value is integers, else if every item is a number it is
 /// floats, else if every item is a T/F word it is flags. One item is a scalar,
@@ -195,6 +542,9 @@ Value typed_value(const std::string& key, const std::string& text) {
     const std::vector<std::string_view> items = value_items(text);
     if (items.empty() || lowercase(key) == "uid") {
         return Value(text);
+    }
+    if (text.rfind("_JSON ", 0) == 0) {
+        return json_value(std::string_view(text).substr(6));
     }
     std::vector<std::int64_t> integers;
     std::vector<double> reals;
@@ -322,6 +672,9 @@ Value::Map parse_key_values(std::string_view line) {
             }
         }
         Value value = typed_value(key, text);
+        if ((key == "virial" || key == "stress") && is_nine_numbers(value)) {
+            value = fortran_matrix(value);
+        }
         const auto existing = std::find_if(fields.begin(), fields.end(),
                                            [&key](const auto& field) { return field.first == key; });
         if (existing != fields.end()) {
@@ -660,6 +1013,56 @@ int apply_stage(Role role) {
 // Frames
 // ---------------------------------------------------------------------------
 
+/// Whether a line is a cell-vector line (VEC1..VEC3), as ASE's vec_cell form
+/// writes them after the atoms.
+bool is_vec_line(std::string_view line) noexcept {
+    std::size_t i = 0;
+    while (i < line.size() && is_space(line[i])) {
+        ++i;
+    }
+    return line.substr(i, 3) == "VEC";
+}
+
+/// Number of VEC lines starting at line index `first`. ASE allows three.
+std::size_t count_vec_lines(const std::vector<std::string_view>& lines, std::size_t first) {
+    std::size_t count = 0;
+    while (first + count < lines.size() && is_vec_line(lines[first + count])) {
+        ++count;
+    }
+    if (count > 3) {
+        fail_at(first + 4, "more than 3 VEC lines after the atoms");
+    }
+    return count;
+}
+
+/// The cell from the VEC lines at `first`: VEC n is row n-1, and an axis that has
+/// a vector is periodic. ASE requires them in order, starting at VEC1.
+Mat3 read_vec_lines(const std::vector<std::string_view>& lines, std::size_t first,
+                    std::size_t count, std::vector<std::string_view>& fields,
+                    std::array<bool, 3>& periodic) {
+    std::array<double, 9> rows{};
+    for (std::size_t ln = 0; ln < count; ++ln) {
+        const std::size_t line_no = first + ln + 1;
+        split_fields(lines[first + ln], fields);
+        long long number = 0;
+        if (fields.size() != 4 || fields.front().size() < 4 ||
+            !parse_long(fields.front().substr(3), number) ||
+            number != static_cast<long long>(ln + 1)) {
+            fail_at(line_no, "expected VEC" + std::to_string(ln + 1) + " with three numbers");
+        }
+        for (std::size_t k = 0; k < 3; ++k) {
+            double value = 0.0;
+            if (!parse_double(fields[k + 1], value)) {
+                fail_at(line_no, "VEC" + std::to_string(ln + 1) + " has a bad number '" +
+                                     std::string(fields[k + 1]) + "'");
+            }
+            rows[3 * ln + k] = value;
+        }
+        periodic[ln] = true;
+    }
+    return Mat3(rows[0], rows[1], rows[2], rows[3], rows[4], rows[5], rows[6], rows[7], rows[8]);
+}
+
 /// Read the frame whose atom count is on line `next`, and advance `next` past
 /// it. `fields` is scratch space.
 Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
@@ -681,8 +1084,13 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
     const std::string_view comment = lines[comment_index];
     const std::size_t comment_line = comment_index + 1;
 
+    // VEC lines follow the atoms. As in ASE, a frame with them has a plain comment
+    // and default columns: the cell comes from the VEC lines alone.
+    const std::size_t vec_first = count <= lines.size() ? comment_index + 1 + count : lines.size();
+    const std::size_t vec_count = vec_first < lines.size() ? count_vec_lines(lines, vec_first) : 0;
+
     // A comment with key=value pairs is extended XYZ; anything else is plain.
-    const bool extended = comment.find('=') != std::string_view::npos;
+    const bool extended = vec_count == 0 && comment.find('=') != std::string_view::npos;
     Value::Map info;
     std::vector<Column> columns;
     if (extended) {
@@ -725,7 +1133,12 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
             read_column(columns[c], buffers[c], fields, numbers, line_no);
         }
     }
-    next = row;
+    next = row + vec_count;
+    std::array<bool, 3> vec_periodic{};
+    Mat3 vec_cell;
+    if (vec_count > 0) {
+        vec_cell = read_vec_lines(lines, row, vec_count, fields, vec_periodic);
+    }
 
     // Positions and the species labels come from their own columns.
     std::vector<double> positions;
@@ -762,6 +1175,10 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
             if (const Value* pbc = find_key(info, "pbc"); pbc != nullptr) {
                 atoms.set_pbc(pbc_of(*pbc, comment_line));
             }
+        }
+        if (vec_count > 0) {
+            atoms.set_cell(vec_cell);
+            atoms.set_pbc(vec_periodic);
         }
 
         for (int stage = 0; stage <= 2; ++stage) {
@@ -854,8 +1271,132 @@ void check_key(std::string_view key) {
     }
 }
 
+/// JSON text for a value, as Python's json.dumps writes it, which is how ASE
+/// writes an info value it cannot write as numbers.
+void append_json(std::string& out, const Value& value, int precision) {
+    switch (value.type()) {
+        case Value::Type::Null:
+            out += "null";
+            break;
+        case Value::Type::Bool:
+            out += value.as_bool() ? "true" : "false";
+            break;
+        case Value::Type::Int:
+            out += std::to_string(value.as_int());
+            break;
+        case Value::Type::Float: {
+            const double number = value.as_double();
+            if (std::isnan(number)) {
+                out += "NaN";
+            } else if (std::isinf(number)) {
+                out += number > 0 ? "Infinity" : "-Infinity";
+            } else {
+                append_float(out, number, precision);
+            }
+            break;
+        }
+        case Value::Type::String: {
+            out += '"';
+            for (const char c : value.as_string()) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (static_cast<unsigned char>(c) < 0x20) {
+                            constexpr char kHex[] = "0123456789abcdef";
+                            const auto code = static_cast<unsigned char>(c);
+                            out += "\\u00";
+                            out += kHex[code >> 4];
+                            out += kHex[code & 0xF];
+                        } else {
+                            out += c;
+                        }
+                }
+            }
+            out += '"';
+            break;
+        }
+        case Value::Type::List: {
+            out += '[';
+            bool first = true;
+            for (const Value& item : value.as_list()) {
+                if (!first) {
+                    out += ", ";
+                }
+                first = false;
+                append_json(out, item, precision);
+            }
+            out += ']';
+            break;
+        }
+        case Value::Type::Map: {
+            out += '{';
+            bool first = true;
+            for (const auto& [name, item] : value.as_map()) {
+                if (!first) {
+                    out += ", ";
+                }
+                first = false;
+                append_json(out, Value(name), precision);
+                out += ": ";
+                append_json(out, item, precision);
+            }
+            out += '}';
+            break;
+        }
+    }
+}
+
+/// A list the comment line carries as plain text: non-empty, and every item a
+/// number, or every item a bool (T/F flags).
+bool is_plain_list(const Value::List& items) {
+    if (items.empty()) {
+        return false;
+    }
+    const bool flags = items.front().is_bool();
+    for (const Value& item : items) {
+        if (flags ? !item.is_bool() : !item.is_number()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// Nine numbers in a 3x3 nested list, as a virial or stress holds them.
+bool is_matrix3(const Value& value) {
+    if (!value.is_list() || value.size() != 3) {
+        return false;
+    }
+    for (const Value& row : value.as_list()) {
+        if (!row.is_list() || row.size() != 3) {
+            return false;
+        }
+        for (const Value& item : row.as_list()) {
+            if (!item.is_number()) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 void append_info_value(std::string& out, const std::string& key, const Value& value,
                        int precision) {
+    // ASE writes a 3x3 virial or stress as nine numbers in Fortran order: row r,
+    // column c is written at position r + 3c.
+    if ((key == "virial" || key == "stress") && is_matrix3(value)) {
+        Value::List flat;
+        for (std::size_t c = 0; c < 3; ++c) {
+            for (std::size_t r = 0; r < 3; ++r) {
+                flat.push_back(value.at(r).at(c));
+            }
+        }
+        append_info_value(out, key, Value(std::move(flat)), precision);
+        return;
+    }
     switch (value.type()) {
         case Value::Type::Bool:
             out += value.as_bool() ? 'T' : 'F';
@@ -876,31 +1417,39 @@ void append_info_value(std::string& out, const std::string& key, const Value& va
             append_quoted(out, value.as_string());
             break;
         case Value::Type::List: {
-            // All numbers, or all T/F flags, as typed_value reads them back.
+            // Numbers, or T/F flags, are written as plain text, as typed_value reads
+            // them back. Anything else is JSON, as ASE writes it.
             const Value::List& items = value.as_list();
-            const bool flags = !items.empty() && items.front().is_bool();
+            if (!is_plain_list(items)) {
+                std::string json;
+                append_json(json, value, precision);
+                append_quoted(out, "_JSON " + json);
+                break;
+            }
+            const bool flags = items.front().is_bool();
             std::string body;
             for (const Value& item : items) {
                 if (!body.empty()) {
                     body += ' ';
                 }
-                if (flags && item.is_bool()) {
+                if (flags) {
                     body += item.as_bool() ? 'T' : 'F';
-                } else if (!flags && item.is_int()) {
+                } else if (item.is_int()) {
                     body += std::to_string(item.as_int());
-                } else if (!flags && item.is_float()) {
-                    append_float(body, item.as_double(), precision);
                 } else {
-                    throw FormatError("xyz: info key '" + key + "' holds a list that is not all "
-                                      "numbers or all T/F flags, which a comment line cannot carry");
+                    append_float(body, item.as_double(), precision);
                 }
             }
             append_quoted(out, body);
             break;
         }
-        default:
-            throw FormatError("xyz: info key '" + key + "' holds a mapping, which a comment line "
-                              "cannot carry");
+        default: {
+            // Null is skipped by the caller. A map or a nested list is JSON.
+            std::string json;
+            append_json(json, value, precision);
+            append_quoted(out, "_JSON " + json);
+            break;
+        }
     }
 }
 
@@ -1159,4 +1708,4 @@ std::string write_xyz(const std::vector<Atoms>& frames, const XyzWriteOptions& o
     return out;
 }
 
-}  // namespace fastatoms::formats
+}  // namespace fastatoms::io

@@ -4,7 +4,7 @@
 
 #include "common.hpp"
 #include "fastatoms/core/value.hpp"
-#include "fastatoms/formats/format.hpp"
+#include "fastatoms/io/format.hpp"
 
 namespace py = pybind11;
 
@@ -14,7 +14,7 @@ PYBIND11_MODULE(_core, m) {
     // Malformed input is a ValueError in Python, with a named subclass for
     // each C++ error type so tests can tell them apart.
     py::register_exception<fastatoms::InputError>(m, "InputError", PyExc_ValueError);
-    py::register_exception<fastatoms::formats::FormatError>(m, "FormatError", PyExc_ValueError);
+    py::register_exception<fastatoms::io::FormatError>(m, "FormatError", PyExc_ValueError);
 
     fastatoms::bindings::bind_atoms(m);
     fastatoms::bindings::bind_formats(m);

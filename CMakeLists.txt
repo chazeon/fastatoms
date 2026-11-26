@@ -4,9 +4,8 @@
 # Builds natively (C++ tests, optional pybind11 test module) and with
 # Emscripten (the WASM module behind the `fastatoms` npm package).
 #
-# The rest of the tree (MD, optimizers, phonons, calculators, YAML, the old
-# io/ and core/neighbor_list) is kept but not built; its old build lives in
-# cmake/legacy/CMakeLists.legacy.txt.
+# The rest of the tree (MD, optimizers, phonons, calculators, YAML input) is
+# kept but not built; its old build lives in cmake/legacy/CMakeLists.legacy.txt.
 cmake_minimum_required(VERSION 3.20)
 
 project(FastAtoms
@@ -54,27 +53,27 @@ set(FASTATOMS_SOURCES
     src/core/cell.cpp
     src/core/elements.cpp
     src/core/value.cpp
-    src/formats/format.cpp)
+    src/io/format.cpp)
 
 set(FASTATOMS_FEATURE_DEFINES)
 if(FASTATOMS_WITH_VASP)
-    list(APPEND FASTATOMS_SOURCES src/formats/vasp.cpp)
+    list(APPEND FASTATOMS_SOURCES src/io/vasp.cpp)
     list(APPEND FASTATOMS_FEATURE_DEFINES FASTATOMS_WITH_VASP)
 endif()
 if(FASTATOMS_WITH_XYZ)
-    list(APPEND FASTATOMS_SOURCES src/formats/xyz.cpp)
+    list(APPEND FASTATOMS_SOURCES src/io/xyz.cpp)
     list(APPEND FASTATOMS_FEATURE_DEFINES FASTATOMS_WITH_XYZ)
 endif()
 if(FASTATOMS_WITH_CIF)
-    list(APPEND FASTATOMS_SOURCES src/formats/cif.cpp)
+    list(APPEND FASTATOMS_SOURCES src/io/cif.cpp)
     list(APPEND FASTATOMS_FEATURE_DEFINES FASTATOMS_WITH_CIF)
 endif()
 if(FASTATOMS_WITH_LAMMPS)
-    list(APPEND FASTATOMS_SOURCES src/formats/lammps_data.cpp src/formats/lammps_dump.cpp)
+    list(APPEND FASTATOMS_SOURCES src/io/lammps_data.cpp src/io/lammps_dump.cpp)
     list(APPEND FASTATOMS_FEATURE_DEFINES FASTATOMS_WITH_LAMMPS)
 endif()
 if(FASTATOMS_WITH_NEIGHBORS)
-    list(APPEND FASTATOMS_SOURCES src/neighbor/neighbor_list.cpp)
+    list(APPEND FASTATOMS_SOURCES src/core/neighbor_list.cpp)
     list(APPEND FASTATOMS_FEATURE_DEFINES FASTATOMS_WITH_NEIGHBORS)
 endif()
 

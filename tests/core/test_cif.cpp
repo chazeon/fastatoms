@@ -7,12 +7,12 @@
 #include <string>
 #include <vector>
 
-#include "fastatoms/formats/cif.hpp"
-#include "fastatoms/formats/format.hpp"
+#include "fastatoms/io/cif.hpp"
+#include "fastatoms/io/format.hpp"
 #include "testing.hpp"
 
 using namespace fastatoms;
-using namespace fastatoms::formats;
+using namespace fastatoms::io;
 
 namespace {
 
@@ -57,6 +57,31 @@ std::vector<Reference> read_reference(const std::string& name) {
     }
     return out;
 }
+
+/// True when read_cif throws a FormatError whose message contains `needle`.
+bool throws_with(const std::string& text, const std::string& needle,
+                 const CifReadOptions& options = {}) {
+    try {
+        (void)read_cif(text, options);
+    } catch (const FormatError& error) {
+        return std::string(error.what()).find(needle) != std::string::npos;
+    } catch (...) {
+    }
+    return false;
+}
+
+/// A data block with a 3 Å cubic cell, the given symmetry lines (may be
+/// empty), and a loop with `header` and `rows`.
+std::string cubic_block(const std::string& symmetry, const std::string& header,
+                        const std::string& rows) {
+    return "data_t\n_cell_length_a 3\n_cell_length_b 3\n_cell_length_c 3\n"
+           "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n" +
+           symmetry + "loop_\n" + header + rows;
+}
+
+const char* const kSiteHeader =
+    "_atom_site_label\n_atom_site_type_symbol\n"
+    "_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n";
 
 /// Squared fractional distance, periodic in each direction.
 double periodic_distance2(const std::array<double, 3>& a, const std::array<double, 3>& b) {
@@ -324,6 +349,147 @@ FA_TEST(cif_negative_tolerance_throws) {
     CifReadOptions options;
     options.merge_tolerance = -1.0;
     FA_CHECK_THROWS(read_cif(read_text("nacl.cif"), options), FormatError);
+}
+
+FA_TEST(cif_hex_third_positions_merge) {
+    // Truncated 1/3, 2/3 coordinates: the images differ by about 1e-4 in
+    // fractional units and must merge (ASE gives 2).
+    const auto structures = read_cif(read_text("hex_third_4digit.cif"));
+    FA_CHECK(structures.size() == 1);
+    const Atoms& atoms = structures.at(0);
+    FA_CHECK(atoms.size() == 2);
+    FA_CHECK(atoms.symbols() == (std::vector<std::string>{"C", "C"}));
+}
+
+FA_TEST(cif_hex_third_positions_three_digits) {
+    // Two images differ by exactly 1e-3 in fractional units (0.333 and 0.334),
+    // which is ASE's symprec, so ASE keeps both and reports 4. Within 0.01 A
+    // they are one atom, so the answer is the same 2 atoms per cell.
+    const auto structures = read_cif(read_text("hex_third_3digit.cif"));
+    FA_CHECK(structures.size() == 1);
+    FA_CHECK(structures.at(0).size() == 2);
+}
+
+FA_TEST(cif_merge_is_cartesian_and_periodic) {
+    // Inversion maps (1e-7, 1/2, 1/2) to (-1e-7, -1/2, -1/2): the two images
+    // sit 2e-7 apart across the cell boundary, so they are one atom.
+    const std::string text = cubic_block("_symmetry_space_group_name_H-M 'P -1'\n", kSiteHeader,
+                                         "Fe1 Fe 0.0000001 0.5 0.5\n");
+    FA_CHECK(read_cif(text).at(0).size() == 1);
+    CifReadOptions exact;
+    exact.merge_tolerance = 0.0;
+    FA_CHECK(read_cif(text, exact).at(0).size() == 2);
+}
+
+FA_TEST(cif_merge_tolerance_is_a_distance) {
+    // The 1/3, 2/3 images are about 2e-4 A apart: a 1e-5 A tolerance keeps them.
+    const std::string text = read_text("hex_third_4digit.cif");
+    CifReadOptions tight;
+    tight.merge_tolerance = 1e-5;
+    FA_CHECK(read_cif(text, tight).at(0).size() > 2);
+}
+
+FA_TEST(cif_no_symmetry_is_p1) {
+    const std::string text = cubic_block("", kSiteHeader, "Fe1 Fe 0 0 0\nOw O 0.5 0.5 0.5\n");
+    const Atoms atoms = read_cif(text).at(0);
+    FA_CHECK(atoms.size() == 2);
+    FA_CHECK(atoms.info()["spacegroup"].as_string() == "P 1");
+}
+
+FA_TEST(cif_malformed_symop_throws_naming_it) {
+    const std::string text =
+        cubic_block("loop_\n_symmetry_equiv_pos_as_xyz\n'x, y, z'\n'x+zz, y'\n", kSiteHeader,
+                    "Fe1 Fe 0 0 0\n");
+    FA_CHECK(throws_with(text, "x+zz, y"));
+}
+
+FA_TEST(cif_null_fractional_coordinate_throws_naming_site) {
+    FA_CHECK(throws_with(cubic_block("", kSiteHeader, "Fe1 Fe ? 0.5 0.5\n"), "'Fe1'"));
+    FA_CHECK(throws_with(cubic_block("", kSiteHeader, "Co2 Co 0.5 . 0.5\n"), "'Co2'"));
+}
+
+FA_TEST(cif_missing_fractional_column_throws) {
+    const std::string header =
+        "_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n";
+    FA_CHECK(throws_with(cubic_block("", header, "Fe1 Fe 0 0\n"), "_atom_site_fract_z"));
+}
+
+FA_TEST(cif_cartesian_only_sites_throw_specific_message) {
+    const std::string text = cubic_block(
+        "", "_atom_site_label\n_atom_site_Cartn_x\n_atom_site_Cartn_y\n_atom_site_Cartn_z\n",
+        "Fe1 0 0 0\n");
+    FA_CHECK(throws_with(text, "Cartesian-only atom sites are not supported"));
+}
+
+FA_TEST(cif_mmcif_throws_specific_message) {
+    const std::string text =
+        "data_m\nloop_\n_atom_site.group_PDB\n_atom_site.label_atom_id\n"
+        "_atom_site.Cartn_x\n_atom_site.Cartn_y\n_atom_site.Cartn_z\n"
+        "ATOM CA 1.0 2.0 3.0\n";
+    FA_CHECK(throws_with(text, "mmCIF"));
+}
+
+FA_TEST(cif_wrapped_coordinate_stays_below_one) {
+    // -1e-17 wraps to exactly 1.0 in floating point; it must fold to 0.
+    const std::string text = cubic_block("", kSiteHeader, "Fe1 Fe -1e-17 0.5 0.5\n");
+    const Atoms atoms = read_cif(text).at(0);
+    const std::vector<double> scaled = atoms.scaled_positions(false);
+    FA_CHECK(scaled[0] >= 0.0 && scaled[0] < 1.0);
+    FA_CHECK_CLOSE(scaled[0], 0.0, 1e-12);
+}
+
+FA_TEST(cif_writer_quotes_reserved_labels) {
+    const std::vector<std::string> labels = {"x'y\"z", "loop_", "DATA_1", "save_s", "global_",
+                                             "stop_",  "_a",    "#c",    "$d",     "[e]",
+                                             ";f",     "a b",   "it's",  "x\ny"};
+    const std::vector<std::string> expected = {"x_y_z", "loop_", "DATA_1", "save_s", "global_",
+                                               "stop_", "_a",    "#c",     "$d",     "[e]",
+                                               ";f",    "a b",   "it's",   "x_y"};
+    std::vector<int> numbers(labels.size(), 26);
+    std::vector<double> positions;
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        positions.insert(positions.end(), {1.0 + 1.5 * static_cast<double>(i), 1.0, 1.0});
+    }
+    Atoms atoms(numbers, positions, Cell::cubic(40.0));
+    atoms.set_string_array("labels", labels);
+    const Atoms again = read_cif(write_cif(atoms)).at(0);
+    FA_CHECK(again.size() == labels.size());
+    FA_CHECK(again.labels() == expected);
+}
+
+FA_TEST(cif_max_occupancy_many_sites) {
+    // 2000 positions, each given twice: a 0.4 copy and a 0.6 copy, the second
+    // one shifted by a lattice vector. The index must merge them across the
+    // boundary and keep the more occupied one.
+    std::ostringstream text;
+    text << "data_many\n_cell_length_a 10\n_cell_length_b 10\n_cell_length_c 20\n"
+            "_cell_angle_alpha 90\n_cell_angle_beta 90\n_cell_angle_gamma 90\n"
+            "_symmetry_space_group_name_H-M 'P 1'\n"
+            "loop_\n_atom_site_label\n_atom_site_type_symbol\n_atom_site_fract_x\n"
+            "_atom_site_fract_y\n_atom_site_fract_z\n_atom_site_occupancy\n";
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 10; ++j) {
+            for (int k = 0; k < 20; ++k) {
+                const double x = i / 10.0;
+                const double y = j / 10.0;
+                const double z = k / 20.0;
+                text << "A" << i << "_" << j << "_" << k << " Fe " << x << ' ' << y << ' ' << z
+                     << " 0.4\n";
+                text << "B" << i << "_" << j << "_" << k << " Fe " << x + 1.0 << ' ' << y << ' '
+                     << z << " 0.6\n";
+            }
+        }
+    }
+    CifReadOptions options;
+    options.disorder = CifDisorder::MaxOccupancy;
+    const Atoms atoms = read_cif(text.str(), options).at(0);
+    FA_CHECK(atoms.size() == 2000);
+    std::size_t kept_more = 0;
+    for (const std::string& label : atoms.labels()) {
+        kept_more += label.front() == 'B' ? 1 : 0;
+    }
+    FA_CHECK(kept_more == 2000);
+    FA_CHECK_CLOSE(atoms.array("occupancy").data.at(0), 0.6, 1e-12);
 }
 
 FA_TEST(cif_deterministic) {

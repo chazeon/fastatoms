@@ -20,7 +20,7 @@
 #include <vector>
 
 #include "fastatoms/core/atoms.hpp"
-#include "fastatoms/neighbor/neighbor_list.hpp"
+#include "fastatoms/core/neighbor_list.hpp"
 #include "testing.hpp"
 
 using fastatoms::Atoms;
@@ -72,7 +72,7 @@ std::vector<Pair> sorted_by_key(std::vector<Pair> pairs) {
 Vec3 row(const Mat3& cell, std::size_t k) { return cell.row(k); }
 
 /// ASE's displacement D = r_j - r_i + S @ cell for the image (i, j, S), in the
-/// operation order of src/neighbor/neighbor_list.cpp: the shift is an FMA chain
+/// operation order of src/core/neighbor_list.cpp: the shift is an FMA chain
 /// over the cell rows, added to r_j - r_i. Used by the reference so that the
 /// comparison at a cutoff equal to a pair distance is exact.
 Vec3 image_vector(const std::vector<double>& pos, const Mat3& cell, std::size_t i, std::size_t j,

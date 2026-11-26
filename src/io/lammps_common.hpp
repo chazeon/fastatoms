@@ -19,9 +19,9 @@
 #include "fastatoms/core/cell.hpp"
 #include "fastatoms/core/elements.hpp"
 #include "fastatoms/core/vec3.hpp"
-#include "fastatoms/formats/format.hpp"
+#include "fastatoms/io/format.hpp"
 
-namespace fastatoms::formats::lammps_common {
+namespace fastatoms::io::lammps_common {
 
 inline bool is_blank(char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; }
 
@@ -182,4 +182,4 @@ inline Cell restricted_cell(double lx, double ly, double lz, double xy, double x
     return Cell(Mat3::from_rows({lx, 0.0, 0.0}, {xy, ly, 0.0}, {xz, yz, lz}), {true, true, true});
 }
 
-}  // namespace fastatoms::formats::lammps_common
+}  // namespace fastatoms::io::lammps_common

@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: MIT
-#include "fastatoms/formats/format.hpp"
+#include "fastatoms/io/format.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <initializer_list>
 
 #ifdef FASTATOMS_WITH_VASP
-#  include "fastatoms/formats/vasp.hpp"
+#  include "fastatoms/io/vasp.hpp"
 #endif
 #ifdef FASTATOMS_WITH_XYZ
-#  include "fastatoms/formats/xyz.hpp"
+#  include "fastatoms/io/xyz.hpp"
 #endif
 #ifdef FASTATOMS_WITH_CIF
-#  include "fastatoms/formats/cif.hpp"
+#  include "fastatoms/io/cif.hpp"
 #endif
 #ifdef FASTATOMS_WITH_LAMMPS
-#  include "fastatoms/formats/lammps.hpp"
+#  include "fastatoms/io/lammps.hpp"
 #endif
 
-namespace fastatoms::formats {
+namespace fastatoms::io {
 namespace {
 
 std::string lower(std::string_view s) {
@@ -183,7 +183,7 @@ std::vector<Atoms> dispatch_read(std::string_view text, const std::string& forma
         check_keys(options, format, {"types", "unwrap"});
         LammpsDumpReadOptions o;
         o.types = get_types(options);
-        o.unwrap = get_bool(options, "unwrap", true);
+        o.unwrap = get_bool(options, "unwrap", false);
         return read_lammps_dump(text, o);
     }
 #endif
@@ -339,4 +339,4 @@ bool can_write(const std::string& format_in) {
     return false;
 }
 
-}  // namespace fastatoms::formats
+}  // namespace fastatoms::io

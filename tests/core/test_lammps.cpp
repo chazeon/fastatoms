@@ -6,12 +6,12 @@
 #include <vector>
 
 #include "fastatoms/core/cell.hpp"
-#include "fastatoms/formats/format.hpp"
-#include "fastatoms/formats/lammps.hpp"
+#include "fastatoms/io/format.hpp"
+#include "fastatoms/io/lammps.hpp"
 #include "testing.hpp"
 
 using namespace fastatoms;
-using namespace fastatoms::formats;
+using namespace fastatoms::io;
 
 namespace {
 
@@ -265,17 +265,17 @@ FA_TEST(dump_triclinic_with_image_flags) {
     const std::string text = read_fixture("triclinic_image.lammpstrj");
     const double cell[] = {6.0, 0.0, 0.0, 1.5, 5.0, 0.0, -2.0, 1.0, 7.0};
 
-    // Unwrapped (default): x + ix*a + iy*b + iz*c.
-    const auto unwrapped = read_lammps_dump(text);
+    // Unwrapped: x + ix*a + iy*b + iz*c.
+    LammpsDumpReadOptions unwrap_on;
+    unwrap_on.unwrap = true;
+    const auto unwrapped = read_lammps_dump(text, unwrap_on);
     FA_CHECK(unwrapped.size() == 1);
     check_cell(unwrapped[0], cell);
     const double u[] = {1.25, 3.0, 3.5, 3.15, 1.4, 6.3, 2.45, 3.7, 1.4};
     check_positions(unwrapped[0], u);
 
-    // Wrapped: the x column as written. ASE reads these values too.
-    LammpsDumpReadOptions no_unwrap;
-    no_unwrap.unwrap = false;
-    const auto wrapped = read_lammps_dump(text, no_unwrap);
+    // Default: the x column as written. ASE reads these values too.
+    const auto wrapped = read_lammps_dump(text);
     const double w[] = {1.25, 3.0, 3.5, -4.85, 2.4, 13.3, 3.95, 8.7, 1.4};
     check_positions(wrapped[0], w);
     FA_CHECK(wrapped[0].int_array("image").data == std::vector<std::int64_t>({0, 0, 0, 1, 0, -1, 0, -1, 0}));
@@ -605,16 +605,16 @@ FA_TEST(dump_xs_with_image_flags_unwraps) {
     // Box 10 x 10 x 10. xs = 0.5 with ix = 1 is x = 15; xu and xsu are already
     // unwrapped, so their image flags must not be added again.
     const std::string box = "ITEM: BOX BOUNDS pp pp pp\n0 10\n0 10\n0 10";
+    LammpsDumpReadOptions unwrap_on;
+    unwrap_on.unwrap = true;
     const auto xs = read_lammps_dump(one_atom_dump(box, "id type xs ys zs ix iy iz",
-                                                   "1 1 0.5 0.25 0.75 1 0 -1"));
+                                                   "1 1 0.5 0.25 0.75 1 0 -1"),
+                                     unwrap_on);
     const double unwrapped[] = {15.0, 2.5, -2.5};
     check_positions(xs[0], unwrapped);
-    LammpsDumpReadOptions wrapped;
-    wrapped.unwrap = false;
     const double raw[] = {5.0, 2.5, 7.5};
     check_positions(read_lammps_dump(one_atom_dump(box, "id type xs ys zs ix iy iz",
-                                                   "1 1 0.5 0.25 0.75 1 0 -1"),
-                                     wrapped)[0],
+                                                   "1 1 0.5 0.25 0.75 1 0 -1"))[0],
                     raw);
 
     const auto xu = read_lammps_dump(
@@ -623,6 +623,21 @@ FA_TEST(dump_xs_with_image_flags_unwraps) {
     const auto xsu = read_lammps_dump(
         one_atom_dump(box, "id type xsu ysu zsu ix iy iz", "1 1 1.5 0.25 -0.25 1 0 -1"));
     check_positions(xsu[0], unwrapped);
+}
+
+FA_TEST(dump_image_flags_ignored_by_default) {
+    // Box 4 x 5 x 20. The x column is 3.9 with ix = 1. ASE ignores the image flags
+    // for x, y, z columns, so the default keeps x = 3.9. unwrap=true adds 4.
+    const std::string box = "ITEM: BOX BOUNDS pp pp pp\n0 4\n0 5\n0 20";
+    const std::string text =
+        one_atom_dump(box, "id type x y z ix iy iz", "1 1 3.9 0.5 0.6 1 0 0");
+    const double as_written[] = {3.9, 0.5, 0.6};
+    check_positions(read_lammps_dump(text)[0], as_written);
+
+    LammpsDumpReadOptions unwrap_on;
+    unwrap_on.unwrap = true;
+    const double unwrapped[] = {7.9, 0.5, 0.6};
+    check_positions(read_lammps_dump(text, unwrap_on)[0], unwrapped);
 }
 
 FA_TEST(dump_boundary_flags_give_pbc) {
@@ -693,10 +708,10 @@ FA_TEST(dump_truncated_last_frame_is_dropped) {
     FA_CHECK(frames[0].info()["timestep"].as_int() == 0);
     FA_CHECK(frames[0].info()["truncated"].as_bool());
 
-    // Through formats::read, index 0 picks the surviving frame.
+    // Through io::read, index 0 picks the surviving frame.
     Value::Map options;
     options.emplace_back("index", Value(std::int64_t{0}));
-    const Atoms first = fastatoms::formats::read(read_fixture("truncated.lammpstrj"), "lammps-dump",
+    const Atoms first = fastatoms::io::read(read_fixture("truncated.lammpstrj"), "lammps-dump",
                                                  Value(std::move(options)));
     FA_CHECK(first.size() == 2);
 }

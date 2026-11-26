@@ -33,9 +33,9 @@
 #include "fastatoms/core/atoms.hpp"
 #include "fastatoms/core/cell.hpp"
 #include "fastatoms/core/value.hpp"
-#include "fastatoms/formats/format.hpp"
+#include "fastatoms/io/format.hpp"
 #ifdef FASTATOMS_WITH_NEIGHBORS
-#  include "fastatoms/neighbor/neighbor_list.hpp"
+#  include "fastatoms/core/neighbor_list.hpp"
 #endif
 #ifdef FASTATOMS_WITH_SYMMETRY
 #  include "fastatoms/symmetry/spacegroup.hpp"
@@ -634,7 +634,7 @@ double volume_js(const fa::Atoms& a) { return a.volume(); }
 
 val read_all_js(const std::string& text, const std::string& format, const std::string& options) {
     return guarded([&] {
-        auto frames = fa::formats::read_all(text, format, parse_options(options));
+        auto frames = fa::io::read_all(text, format, parse_options(options));
         val out = val::array();
         for (auto& frame : frames) {
             out.call<void>("push", val(std::move(frame)));
@@ -644,20 +644,20 @@ val read_all_js(const std::string& text, const std::string& format, const std::s
 }
 
 fa::Atoms read_js(const std::string& text, const std::string& format, const std::string& options) {
-    return guarded([&] { return fa::formats::read(text, format, parse_options(options)); });
+    return guarded([&] { return fa::io::read(text, format, parse_options(options)); });
 }
 
 std::string write_js(const fa::Atoms& atoms, const std::string& format, const std::string& options) {
-    return guarded([&] { return fa::formats::write(atoms, format, parse_options(options)); });
+    return guarded([&] { return fa::io::write(atoms, format, parse_options(options)); });
 }
 
 std::string guess_format_js(const std::string& name, const std::string& head) {
-    return fa::formats::guess_format(name, head);
+    return fa::io::guess_format(name, head);
 }
 
-val available_formats_js() { return string_list(fa::formats::available_formats()); }
+val available_formats_js() { return string_list(fa::io::available_formats()); }
 
-bool can_write_js(const std::string& format) { return fa::formats::can_write(format); }
+bool can_write_js(const std::string& format) { return fa::io::can_write(format); }
 
 fa::Atoms from_arrays_js(const val& numbers, const val& positions, const val& cell, const val& pbc) {
     return guarded([&]() -> fa::Atoms {

@@ -80,16 +80,19 @@ CMakeLists.txt                      new: options per feature (§5), builds only 
 cmake/Dependencies.cmake            gemmi + vesin (compiled subset), pybind11
 include/fastatoms/core/             reused: vec3, cell, elements (+ try_number_from_label),
                                     atoms (trimmed; + int/string arrays), value (carved from io/parameters)
-include/fastatoms/formats/          NEW IO: format (registry), vasp, xyz, cif, lammps
-include/fastatoms/neighbor/         NEW neighbour pairs (vesin)
-src/formats/, src/neighbor/         implementations
+include/fastatoms/io/               IO, replaced in place: format (registry), vasp, xyz
+                                    (was extxyz), cif (gemmi), lammps (new)
+include/fastatoms/core/neighbor_list.hpp   replaced in place: vesin neighbour pairs
+include/fastatoms/symmetry/         replaced in place: spglib
+src/io/, src/core/, src/symmetry/   implementations
 tests/core/                         new C++ tests (testing.hpp harness reused)
 tests/data/<format>/                fixtures shared by C++, Python and JS tests
 tests/py/                           pytest parity vs ASE / vesin (uv)
 bindings/wasm/                      embind module
 bindings/python/                    pybind11 test module
 js/                                 npm package "fastatoms" (TS wrapper, node:test)
-legacy, untouched, unbuilt:         io/, core/neighbor_list, md/, optimize/, ... python/, tests/cpp, tests/python
+legacy, unbuilt:                    io/{parameters,yaml_input}, md/, optimize/, phonon/, ...
+                                    python/, tests/cpp, tests/python
 ```
 
 ## 4. Format edge cases (the checklist auditors verify)
@@ -293,7 +296,7 @@ write(atoms, { format: "extxyz" });            // → string
 | --- | --- | --- |
 | P0 | me | Branch; Atoms/Value/labels core; contract headers in `formats/` and `neighbor/`; registry; new CMake; core tests. ✅ |
 | P1 | haiku (parallel, each owns its files and its own feature-only build dir) | **A** VASP · **B** LAMMPS data+dump · **C** CIF via gemmi · **D** vesin neighbour pairs · **E** xyz/extxyz port |
-| P1.5 | me | Fold `formats/` → `io/` (replacing vasp/cif/extxyz→xyz) and `neighbor/` → `core/neighbor_list`, in place; full build. |
+| P1.5 | me | Fold `formats/` → `io/` (replacing vasp/cif/extxyz→xyz) and `neighbor/` → `core/neighbor_list`, in place; namespace `fastatoms::io`; full build. ✅ |
 | P2 | haiku (parallel) | **E** embind + TS package + node tests + build script · **F** pybind11 + uv + pytest ASE parity |
 | P3 | sonnet | **Audit 1:** format edge cases against §4 (writes failing tests/fixtures) · **Audit 2:** NL correctness, API and WASM build/size, C++ quality |
 | P4 | haiku | Fix the audit findings; me: final verify (C++ tests, pytest, node tests, wasm size) and README |

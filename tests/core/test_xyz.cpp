@@ -7,13 +7,13 @@
 
 #include "fastatoms/core/atoms.hpp"
 #include "fastatoms/core/cell.hpp"
-#include "fastatoms/formats/format.hpp"
-#include "fastatoms/formats/xyz.hpp"
+#include "fastatoms/io/format.hpp"
+#include "fastatoms/io/xyz.hpp"
 #include "fastatoms/util/text.hpp"
 #include "testing.hpp"
 
 using namespace fastatoms;
-using namespace fastatoms::formats;
+using namespace fastatoms::io;
 
 namespace {
 
@@ -284,8 +284,100 @@ FA_TEST(writer_rejects_unrepresentable_info) {
     atoms.set_info(Value(Value::Map{{"bad key", Value(1)}}));
     FA_CHECK_THROWS(write_xyz(atoms), FormatError);
 
-    atoms.set_info(Value(Value::Map{{"nested", Value(Value::Map{{"a", Value(1)}})}}));
+    atoms.set_info(Value(Value::Map{{"text", Value("two\nlines")}}));
     FA_CHECK_THROWS(write_xyz(atoms), FormatError);
+}
+
+FA_TEST(nested_info_round_trips_as_json) {
+    Atoms atoms({1}, {0.0, 0.0, 0.0});
+    atoms.set_info(Value(Value::Map{
+        {"nested", Value(Value::Map{{"a", Value(1)},
+                                     {"b", Value(Value::List{Value(true), Value()})}})},
+        {"empty", Value(Value::List{})},
+    }));
+    const std::string text = write_xyz(atoms);
+    FA_CHECK(text.find("nested=\"_JSON {\\\"a\\\": 1, \\\"b\\\": [true, null]}\"") !=
+             std::string::npos);
+    FA_CHECK(text.find("empty=\"_JSON []\"") != std::string::npos);
+
+    const Atoms back = read_xyz(text).front();
+    FA_CHECK(back.info()["nested"].at("a").as_int() == 1);
+    FA_CHECK(back.info()["nested"].at("b").at(0).as_bool());
+    FA_CHECK(back.info()["nested"].at("b").at(1).is_null());
+    FA_CHECK(back.info()["empty"].is_list() && back.info()["empty"].size() == 0);
+    FA_CHECK(write_xyz(back) == text);
+}
+
+FA_TEST(virial_is_read_and_written_in_fortran_order) {
+    // Nine numbers in Fortran order: row r, column c is number r + 3c (ASE's rule).
+    // Other keys keep the nine numbers as a flat list.
+    const std::string text =
+        "1\nvirial=\"1 4 7 2 5 8 3 6 9\" not_a_3x3=\"1 4 7 2 5 8 3 6 9\"\nH 0 0 0\n";
+    const Atoms atoms = read_xyz(text).front();
+    const Value& virial = atoms.info()["virial"];
+    FA_CHECK(virial.is_list() && virial.size() == 3);
+    for (std::size_t r = 0; r < 3; ++r) {
+        for (std::size_t c = 0; c < 3; ++c) {
+            FA_CHECK(virial.at(r).at(c).as_int() == static_cast<std::int64_t>(3 * r + c + 1));
+        }
+    }
+    FA_CHECK(atoms.info()["not_a_3x3"].size() == 9);
+
+    const std::string out = write_xyz(atoms);
+    FA_CHECK(out.find("virial=\"1 4 7 2 5 8 3 6 9\"") != std::string::npos);
+    FA_CHECK(out.find("not_a_3x3=\"1 4 7 2 5 8 3 6 9\"") != std::string::npos);
+    FA_CHECK(write_xyz(read_xyz(out).front()) == out);
+}
+
+FA_TEST(json_values_are_read_as_nested_lists_and_maps) {
+    const std::string text =
+        "1\nf_float_array=\"_JSON [[1.5, 2, 3], [4, 5, 6]]\" "
+        "f_int_array=\"_JSON [[1, 2], [3, 4]]\" f_dict={_JSON {\"a\" : 1}}\nH 0 0 0\n";
+    const Atoms atoms = read_xyz(text).front();
+
+    // A float anywhere makes the whole numeric array floats, as numpy does.
+    const Value& floats = atoms.info()["f_float_array"];
+    FA_CHECK(floats.is_list() && floats.size() == 2);
+    FA_CHECK(floats.at(0).at(0).is_float() && floats.at(0).at(0).as_double() == 1.5);
+    FA_CHECK(floats.at(0).at(1).is_float() && floats.at(0).at(1).as_double() == 2.0);
+    FA_CHECK(floats.at(1).at(2).as_double() == 6.0);
+
+    const Value& ints = atoms.info()["f_int_array"];
+    FA_CHECK(ints.at(1).at(0).is_int() && ints.at(1).at(0).as_int() == 3);
+
+    const Value& dict = atoms.info()["f_dict"];
+    FA_CHECK(dict.is_map() && dict.at("a").as_int() == 1);
+
+    const std::string out = write_xyz(atoms);
+    FA_CHECK(out.find("f_float_array=\"_JSON [[1.5, 2.0, 3.0], [4.0, 5.0, 6.0]]\"") !=
+             std::string::npos);
+    FA_CHECK(out.find("f_int_array=\"_JSON [[1, 2], [3, 4]]\"") != std::string::npos);
+    FA_CHECK(out.find("f_dict=\"_JSON {\\\"a\\\": 1}\"") != std::string::npos);
+    FA_CHECK(write_xyz(read_xyz(out).front()) == out);
+}
+
+FA_TEST(vec_lines_give_the_cell) {
+    // ASE's vec_cell form: the comment is not read as key=value pairs, and the
+    // VEC lines after the atoms give the cell. A missing vector is an aperiodic axis.
+    const std::string text =
+        "2\nComment with a = sign\nH 0 0 0\nH 0 0 0.74\nVEC1 4 0 0\nVEC2 0 5 0\n"
+        "1\nc\nHe 1 1 1\n";
+    const std::vector<Atoms> frames = read_xyz(text);
+    FA_CHECK(frames.size() == 2);
+    const Atoms& atoms = frames[0];
+    FA_CHECK(atoms.size() == 2);
+    FA_CHECK(atoms.info()["comment"].as_string() == "Comment with a = sign");
+    FA_CHECK(atoms.cell().matrix().m[0] == 4.0);
+    FA_CHECK(atoms.cell().matrix().m[4] == 5.0);
+    FA_CHECK(atoms.cell().matrix().m[8] == 0.0);
+    FA_CHECK(atoms.pbc()[0] && atoms.pbc()[1] && !atoms.pbc()[2]);
+    FA_CHECK(frames[1].numbers() == std::vector<int>({2}));
+    FA_CHECK(frames[1].cell().is_zero());
+
+    FA_CHECK(error_of("1\nc\nH 0 0 0\nVEC2 0 1 0\n").find("line 4") != std::string::npos);
+    FA_CHECK(error_of("1\nc\nH 0 0 0\nVEC1 1 0\n").find("line 4") != std::string::npos);
+    FA_CHECK_THROWS(read_xyz("1\nc\nH 0 0 0\nVEC1 1 0 0\nVEC2 0 1 0\nVEC3 0 0 1\nVEC3 0 0 1\n"),
+                    FormatError);
 }
 
 FA_TEST(malformed_input_is_rejected_with_line_numbers) {
