@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./wasm/fastatoms.mjs": {
+      "types": "./dist/wasm/fastatoms.d.mts",
+      "import": "./dist/wasm/fastatoms.mjs"
     }
   },
   "files": [

@@ -146,6 +146,26 @@ Species labels are kept per atom: a POSCAR species line `O H1 H2` gives labels
 `O`, `H1`, `H2`, and symbols `O`, `H`, `H`. `repeat` keeps labels in ASE order,
 so the label of repeated atom `k` is the label of atom `k % N`.
 
+## Bundlers
+
+`init()` loads the glue with a dynamic import of `dist/wasm/`. A bundler that
+inlines this package cannot follow that path, and a page that must be a single
+script cannot use a dynamic import at all. Import the glue yourself and pass
+its factory to `init`:
+
+```js
+import { init, read } from "fastatoms";
+import createFastAtoms from "fastatoms/wasm/fastatoms.mjs";
+
+await init(createFastAtoms);
+const atoms = read(poscarText, { filename: "POSCAR" });
+```
+
+The glue finds `fastatoms.wasm` next to itself (through `import.meta.url`), so
+the bundler must also emit that file. The single-file build
+(`-DFASTATOMS_WASM_SINGLE_FILE=ON`, below) embeds it and needs nothing extra.
+A later `init()` ignores its argument and reuses the loaded module.
+
 ## Build
 
 The package ships a prebuilt module in `dist/wasm/`. To rebuild it, you need
@@ -160,7 +180,8 @@ bash scripts/build-wasm.sh --minimal -DFASTATOMS_WASM_SINGLE_FILE=ON
 
 The script configures `<repo>/build/wasm-<preset>` with
 `emcmake cmake -G Ninja`, builds `fastatoms_wasm`, and copies
-`fastatoms.mjs` and `fastatoms.wasm` into `dist/wasm/`. Any `-D...` argument is
+`fastatoms.mjs` and `fastatoms.wasm` into `dist/wasm/`, with the glue's types
+`fastatoms.d.mts` from `src/wasm/`. Any `-D...` argument is
 passed to CMake and wins over the preset.
 
 | Preset | Formats | Neighbours | Symmetry | `fastatoms.wasm` | gzip -9 |

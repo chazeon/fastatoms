@@ -15,9 +15,10 @@
 import { Atoms } from "./atoms.js";
 import * as io from "./io.js";
 import { init, requireModule } from "./module.js";
-import type { NeighborKey } from "./raw.js";
+import type { EmscriptenFactory, NeighborKey } from "./raw.js";
 
 export { init, Atoms, io };
+export type { EmscriptenFactory };
 export * as symmetry from "./symmetry.js";
 export type { ArrayInfo, ArrayKind, FromArraysOptions, Vec3 } from "./atoms.js";
 export type { IndexResult, IOInput, IOOptions, TextInput, WriteOptions as IOWriteOptions } from "./io.js";

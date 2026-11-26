@@ -19,8 +19,9 @@
 #   FASTATOMS_VESIN_SOURCE_DIR     existing vesin checkout (skips the download)
 #   FASTATOMS_SPGLIB_SOURCE_DIR    existing spglib checkout (skips the download)
 #
-# Output: js/dist/wasm/fastatoms.mjs and fastatoms.wasm (only fastatoms.mjs
-# with -DFASTATOMS_WASM_SINGLE_FILE=ON). The CMake build tree is
+# Output: js/dist/wasm/fastatoms.mjs, its types fastatoms.d.mts (copied from
+# js/src/wasm/) and fastatoms.wasm (only fastatoms.mjs with
+# -DFASTATOMS_WASM_SINGLE_FILE=ON). The CMake build tree is
 # <repo>/build/wasm-<preset>. The sizes of the .wasm are printed at the end.
 
 set -euo pipefail
@@ -123,6 +124,7 @@ cmake --build "$BUILD_DIR" --target fastatoms_wasm --parallel
 OUT_DIR="$JS_DIR/dist/wasm"
 mkdir -p "$OUT_DIR"
 cp "$BUILD_DIR/fastatoms.mjs" "$OUT_DIR/"
+cp "$JS_DIR/src/wasm/fastatoms.d.mts" "$OUT_DIR/"
 SIZE_NOTE=""
 if [[ -f "$BUILD_DIR/fastatoms.wasm" ]]; then
     cp "$BUILD_DIR/fastatoms.wasm" "$OUT_DIR/"
