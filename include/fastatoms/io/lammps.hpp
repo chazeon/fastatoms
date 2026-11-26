@@ -8,10 +8,16 @@
 /// (xy xz yz) and general triclinic (avec/bvec/cvec + abc origin) boxes, atom
 /// styles, the type -> element map priority (explicit `types` > `Atom Type
 /// Labels` section > Masses comment whose element agrees with the mass >
-/// mass match > error), image flags, dump BOX BOUNDS with tilt-inclusive
+/// mass match > dummy X), image flags, dump BOX BOUNDS with tilt-inclusive
 /// bounds, x/xs/xu/xsu coordinate columns, element column, id sorting.
 /// Type columns may hold type labels. A truncated last frame is dropped and
 /// the last good frame gets info["truncated"] = true.
+///
+/// A type that nothing resolves (not in `types`, and no label, Masses comment
+/// or mass that names an element) becomes the dummy element X (Z = 0) labelled
+/// by its type number, e.g. "2". Errors are reserved for bad input: a `types`
+/// entry that names no element, or a Masses comment whose element disagrees
+/// with the stated mass.
 
 #include <map>
 #include <string>
@@ -25,7 +31,8 @@ namespace fastatoms::io {
 /// LAMMPS type -> label. The label sets "labels" and, through
 /// `number_from_label`, the element ("Fe1" and "Fe2" may both be iron).
 /// Option key "types": a map {"1": "Fe", ...} or a list ["Fe", "O"]
-/// (list entry k is type k+1).
+/// (list entry k is type k+1). A partial map is fine: it resolves the types
+/// it names, and the file (data) or the dummy X (dump) resolves the rest.
 using LammpsTypeMap = std::map<int, std::string>;
 
 struct LammpsDataReadOptions {

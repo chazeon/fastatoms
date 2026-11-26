@@ -76,17 +76,34 @@ if(FASTATOMS_WITH_NEIGHBORS)
         set(_vesin_main ${CMAKE_CURRENT_BINARY_DIR}/vesin_patched/vesin.cpp)
         file(CONFIGURE OUTPUT ${_vesin_main} CONTENT "${_vesin_patched}" @ONLY)
     endif()
+    # cpu_cell_list.cpp sizes its grid with a bin budget. When one axis is much
+    # longer than the rest (a 200000 x 2 x 2 box), the rescaling truncates the
+    # short axes to zero bins and add_point divides by zero. Clamp every axis to
+    # at least one bin. The same failure is fixed upstream in v0.7.0-rc1.
+    file(READ ${_v}/cpu_cell_list.cpp _cells_src)
+    set(_cells_patched "${_cells_src}")
+    string(REPLACE "n_cells[0] = std::trunc(ratio_x_y * n_cells[1]);"
+                   "n_cells[0] = std::trunc(ratio_x_y * n_cells[1]);\n        // fastatoms: keep one bin per axis\n        for (size_t d = 0; d < 3; d++) {\n            n_cells[d] = std::max(1.0, n_cells[d]);\n        }"
+                   _cells_patched "${_cells_patched}")
+    string(FIND "${_cells_patched}" "fastatoms: keep one bin per axis" _cells_marker)
+    if(_cells_marker EQUAL -1)
+        message(WARNING "vesin: could not patch the cell-list bin budget; using the original cpu_cell_list.cpp")
+        set(_cells_main ${_v}/cpu_cell_list.cpp)
+    else()
+        set(_cells_main ${CMAKE_CURRENT_BINARY_DIR}/vesin_patched/cpu_cell_list.cpp)
+        file(CONFIGURE OUTPUT ${_cells_main} CONTENT "${_cells_patched}" @ONLY)
+    endif()
     add_library(fastatoms_vesin STATIC
         ${_vesin_main}
         ${_v}/threadpool.cpp
-        ${_v}/cpu_cell_list.cpp
+        ${_cells_main}
         ${_v}/verlet.cpp
         ${_v}/vesin_cuda_stub.cpp)
     target_include_directories(fastatoms_vesin SYSTEM PUBLIC ${VESIN_DIR}/vesin/include)
     target_include_directories(fastatoms_vesin PRIVATE ${_v})
     target_compile_features(fastatoms_vesin PUBLIC cxx_std_17)
-    # Static use: no dllexport/visibility games.
-    target_compile_definitions(fastatoms_vesin PUBLIC VESIN_STATIC_DEFINE)
+    # No static define is needed: vesin.h leaves VESIN_API empty unless
+    # VESIN_SHARED is defined, so a static build has no import/export marks.
     set_target_properties(fastatoms_vesin PROPERTIES POSITION_INDEPENDENT_CODE ON)
     if(NOT EMSCRIPTEN)
         find_package(Threads REQUIRED)
@@ -96,22 +113,28 @@ endif()
 
 if(FASTATOMS_BUILD_PYTHON)
     find_package(Python 3.10 COMPONENTS Interpreter Development.Module REQUIRED)
-    find_package(pybind11 CONFIG QUIET)
-    if(NOT pybind11_FOUND)
-        execute_process(
-            COMMAND "${Python_EXECUTABLE}" -m pybind11 --cmakedir
-            OUTPUT_VARIABLE _pybind11_dir OUTPUT_STRIP_TRAILING_WHITESPACE
-            RESULT_VARIABLE _pybind11_rc ERROR_QUIET)
-        if(_pybind11_rc EQUAL 0 AND _pybind11_dir)
-            find_package(pybind11 CONFIG QUIET PATHS "${_pybind11_dir}" NO_DEFAULT_PATH)
+    if(FASTATOMS_PYBIND11_SOURCE_DIR)
+        # An existing checkout wins over any installed pybind11 or download.
+        add_subdirectory(${FASTATOMS_PYBIND11_SOURCE_DIR}
+                         ${CMAKE_CURRENT_BINARY_DIR}/pybind11_source)
+    else()
+        find_package(pybind11 CONFIG QUIET)
+        if(NOT pybind11_FOUND)
+            execute_process(
+                COMMAND "${Python_EXECUTABLE}" -m pybind11 --cmakedir
+                OUTPUT_VARIABLE _pybind11_dir OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE _pybind11_rc ERROR_QUIET)
+            if(_pybind11_rc EQUAL 0 AND _pybind11_dir)
+                find_package(pybind11 CONFIG QUIET PATHS "${_pybind11_dir}" NO_DEFAULT_PATH)
+            endif()
         endif()
-    endif()
-    if(NOT pybind11_FOUND)
-        FetchContent_Declare(pybind11
-            GIT_REPOSITORY https://github.com/pybind/pybind11.git
-            GIT_TAG        ${FASTATOMS_PYBIND11_TAG}
-            GIT_SHALLOW    TRUE)
-        FetchContent_MakeAvailable(pybind11)
+        if(NOT pybind11_FOUND)
+            FetchContent_Declare(pybind11
+                GIT_REPOSITORY https://github.com/pybind/pybind11.git
+                GIT_TAG        ${FASTATOMS_PYBIND11_TAG}
+                GIT_SHALLOW    TRUE)
+            FetchContent_MakeAvailable(pybind11)
+        endif()
     endif()
 endif()
 
@@ -135,6 +158,9 @@ if(FASTATOMS_WITH_SYMMETRY)
     target_include_directories(fastatoms_spglib PRIVATE
         ${SPGLIB_DIR}/src ${CMAKE_CURRENT_BINARY_DIR}/spglib_generated)
     target_compile_definitions(fastatoms_spglib PRIVATE SPG_BUILD)
+    # The archive is static, so callers must not compile for __declspec(dllimport)
+    # on MSVC. Same as upstream spglib's own static-library setting.
+    target_compile_definitions(fastatoms_spglib PUBLIC SPG_STATIC_LIBRARY)
     set_target_properties(fastatoms_spglib PROPERTIES POSITION_INDEPENDENT_CODE ON)
     if(NOT MSVC)
         target_link_libraries(fastatoms_spglib PUBLIC m)

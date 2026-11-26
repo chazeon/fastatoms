@@ -9,7 +9,6 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -96,12 +95,41 @@ inline std::vector<std::string_view> split_lines(std::string_view text) {
     throw FormatError("LAMMPS line " + std::to_string(line_number) + ": " + what);
 }
 
+/// A decimal real, parsed locale-independently with std::from_chars. A
+/// leading '+' is accepted. A number too small for a double (`1e-400`) reads
+/// as zero, as in vasp.cpp; one too large (`1e400`) is rejected.
+inline bool try_parse_double(std::string_view token, double& value) {
+    if (token.size() > 1 && token.front() == '+' && token[1] != '+' && token[1] != '-') {
+        token.remove_prefix(1);
+    }
+    if (token.empty()) {
+        return false;
+    }
+    double parsed = 0.0;
+    const char* first = token.data();
+    const char* last = token.data() + token.size();
+    const auto [ptr, ec] = std::from_chars(first, last, parsed);
+    if (ptr != last) {
+        return false;
+    }
+    if (ec == std::errc::result_out_of_range) {
+        // The exponent decides: a negative one is underflow, anything else overflow.
+        const std::size_t e = token.find_first_of("eE");
+        if (e == std::string_view::npos || e + 1 >= token.size() || token[e + 1] != '-') {
+            return false;
+        }
+        parsed = 0.0;
+    } else if (ec != std::errc{}) {
+        return false;
+    }
+    value = parsed;
+    return true;
+}
+
 inline double parse_double(std::string_view token, std::size_t line_number) {
-    const std::string s(token);
-    char* end = nullptr;
-    const double value = std::strtod(s.c_str(), &end);
-    if (s.empty() || end != s.c_str() + s.size()) {
-        line_error(line_number, "expected a number, got '" + s + "'");
+    double value = 0.0;
+    if (!try_parse_double(token, value)) {
+        line_error(line_number, "expected a number, got '" + std::string(token) + "'");
     }
     return value;
 }

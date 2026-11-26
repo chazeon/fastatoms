@@ -625,4 +625,78 @@ FA_TEST(ase_boundary_references_match_exactly) {
     }
 }
 
+FA_TEST(elongated_periodic_box_matches_brute_force) {
+    // vesin 0.6.2 truncated the two short axes to zero bins here and divided
+    // by zero. ASE gives the two directed pairs at distance 0.5.
+    const Mat3 cell = Mat3::diagonal(200000.0, 2.0, 2.0);
+    const Pbc pbc{{true, true, true}};
+    const std::vector<double> pos{0.0, 0.0, 0.0, 0.5, 0.0, 0.0};
+    const NeighborPairs got = run(pos, cell, pbc, 1.0);
+    FA_CHECK(got.size() == 2);
+    expect_same_pairs_exact(pairs_of(got), brute_force(pos, cell, pbc, 1.0), "elongated box");
+}
+
+FA_TEST(cutoff_below_vesin_minimum_matches_brute_force) {
+    // Cutoffs at or below 1e-6 are searched on a scaled copy of the geometry.
+    const Mat3 cell = Mat3::diagonal(10.0, 10.0, 10.0);
+    const Pbc open{{false, false, false}};
+    const std::vector<double> pos{1.0, 1.0, 1.0, 1.0 + 4e-7, 1.0, 1.0};
+    const NeighborPairs got = run(pos, cell, open, 5e-7);
+    FA_CHECK(got.size() == 2);
+    expect_same_pairs_exact(pairs_of(got), brute_force(pos, cell, open, 5e-7), "open tiny cutoff");
+
+    // The pair distance is excluded at the cutoff equal to it, and kept one
+    // ulp above, as for ordinary cutoffs.
+    const double d = pairs_of(got).front().d;
+    FA_CHECK(run(pos, cell, open, d).size() == 0);
+    const double above = std::nextafter(d, std::numeric_limits<double>::infinity());
+    expect_same_pairs_exact(pairs_of(run(pos, cell, open, above)),
+                            brute_force(pos, cell, open, above), "open tiny boundary");
+
+    // Periodic: the two atoms are 4e-7 apart across the cell face.
+    const Pbc periodic{{true, true, true}};
+    const std::vector<double> across{2e-7, 0.5, 0.5, 9.9999998, 0.5, 0.5};
+    const NeighborPairs wrapped = run(across, cell, periodic, 5e-7);
+    FA_CHECK(wrapped.size() == 2);
+    expect_same_pairs_exact(pairs_of(wrapped), brute_force(across, cell, periodic, 5e-7),
+                            "periodic tiny cutoff");
+}
+
+FA_TEST(large_offset_coordinates_match_brute_force) {
+    // Coordinates near 1e6 Å lose about 1e-10 Å of precision, so the search
+    // margin has to grow with the coordinate magnitude. Boundary cutoffs are
+    // taken from the reference pair distances.
+    std::mt19937_64 rng(20261126);
+    std::uniform_real_distribution<double> unit(0.0, 10.0);
+    int tested = 0;
+    for (int trial = 0; trial < 40; ++trial) {
+        const Mat3 cell = Mat3::diagonal(10.0, 10.0, 10.0);
+        const Pbc pbc{{true, true, true}};
+        const double offset = (trial % 2 == 0) ? 1e6 : -1e6;
+        std::vector<double> pos;
+        for (std::size_t k = 0; k < 18; ++k) {
+            pos.push_back(offset + unit(rng));
+        }
+        const std::vector<Pair> near = brute_force(pos, cell, pbc, 4.0);
+        if (near.empty()) {
+            continue;
+        }
+        std::uniform_int_distribution<std::size_t> pick(0, near.size() - 1);
+        const Pair chosen = near[pick(rng)];
+        const double d = chosen.d;
+
+        const std::vector<Pair> at = pairs_of(run(pos, cell, pbc, d));
+        expect_same_pairs_exact(at, brute_force(pos, cell, pbc, d), "offset boundary at d");
+        FA_CHECK(!contains_pair(at, chosen));
+
+        const double above = std::nextafter(d, std::numeric_limits<double>::infinity());
+        const std::vector<Pair> just_above = pairs_of(run(pos, cell, pbc, above));
+        expect_same_pairs_exact(just_above, brute_force(pos, cell, pbc, above),
+                                "offset boundary above d");
+        FA_CHECK(contains_pair(just_above, chosen));
+        ++tested;
+    }
+    FA_CHECK(tested >= 20);
+}
+
 FA_TEST_MAIN()

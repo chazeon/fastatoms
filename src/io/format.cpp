@@ -3,7 +3,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <initializer_list>
+#include <system_error>
 
 #ifdef FASTATOMS_WITH_VASP
 #  include "fastatoms/io/vasp.hpp"
@@ -66,6 +69,27 @@ std::string canonical(const std::string& format) {
     }
 }
 
+/// An integer option. Only a Value holding an integer, or a float with an exact
+/// integer value that fits in int64, is accepted. Anything else is a FormatError.
+[[maybe_unused]] std::int64_t get_integer(const Value& options, std::string_view key) {
+    const Value* v = options.is_map() ? options.find(key) : nullptr;
+    if (v == nullptr) {
+        throw FormatError("option '" + std::string(key) + "' is missing");
+    }
+    if (v->is_int()) {
+        return v->as_int();
+    }
+    // [-2^63, 2^63) is the range a double converts to int64 without overflow.
+    if (v->is_float()) {
+        const double number = v->as_double();
+        if (std::isfinite(number) && number == std::trunc(number) &&
+            number >= -9223372036854775808.0 && number < 9223372036854775808.0) {
+            return static_cast<std::int64_t>(number);
+        }
+    }
+    throw FormatError("option '" + std::string(key) + "' must be an integer");
+}
+
 [[maybe_unused]] bool get_bool(const Value& options, std::string_view key, bool fallback) {
     const Value* v = options.is_map() ? options.find(key) : nullptr;
     return v == nullptr ? fallback : v->value_or(fallback);
@@ -119,10 +143,15 @@ LammpsTypeMap get_types(const Value& options) {
         return types;
     }
     for (const auto& [key, label] : v->as_map()) {
+        // The whole key must be an integer: "1abc" is not type 1.
+        std::string_view digits = key;
+        if (!digits.empty() && digits.front() == '+') {
+            digits.remove_prefix(1);
+        }
         int type = 0;
-        try {
-            type = std::stoi(key);
-        } catch (const std::exception&) {
+        const char* last = digits.data() + digits.size();
+        const auto [ptr, ec] = std::from_chars(digits.data(), last, type);
+        if (digits.empty() || ec != std::errc{} || ptr != last) {
             throw FormatError("LAMMPS 'types' keys must be integers, got '" + key + "'");
         }
         types[type] = label.as_string();
@@ -147,7 +176,10 @@ std::vector<Atoms> dispatch_read(std::string_view text, const std::string& forma
 #ifdef FASTATOMS_WITH_XYZ
     if (format == "xyz" || format == "extxyz") {
         check_keys(options, format, {});
-        return read_xyz(text);
+        // "xyz" is plain XYZ: the comment line is never parsed. "extxyz" parses it.
+        XyzReadOptions o;
+        o.extended = format == "extxyz";
+        return read_xyz(text, o);
     }
 #endif
 #ifdef FASTATOMS_WITH_CIF
@@ -205,8 +237,8 @@ Atoms read(std::string_view text, const std::string& format, const Value& option
         throw FormatError("no structure found in the input");
     }
     std::int64_t index = -1;
-    if (const Value* v = options.is_map() ? options.find("index") : nullptr) {
-        index = v->as_int();
+    if (options.is_map() && options.find("index") != nullptr) {
+        index = get_integer(options, "index");
     }
     const auto n = static_cast<std::int64_t>(frames.size());
     const std::int64_t k = index < 0 ? n + index : index;
@@ -236,8 +268,14 @@ std::string write(const Atoms& atoms, const std::string& format_in, const Value&
         check_keys(options, format, {"precision"});
         XyzWriteOptions o;
         o.extended = format == "extxyz";
-        if (const Value* p = options.is_map() ? options.find("precision") : nullptr) {
-            o.precision = static_cast<int>(p->as_int());
+        if (options.is_map() && options.find("precision") != nullptr) {
+            // Range-checked before the narrowing cast, so no value wraps into range.
+            const std::int64_t precision = get_integer(options, "precision");
+            if (precision < 0 || precision > 17) {
+                throw FormatError("xyz: precision must be 0 (shortest) or 1 to 17, got " +
+                                  std::to_string(precision));
+            }
+            o.precision = static_cast<int>(precision);
         }
         return write_xyz(atoms, o);
     }

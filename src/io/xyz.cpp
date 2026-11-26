@@ -139,6 +139,25 @@ const Value* find_key(const Value::Map& map, std::string_view key) {
 /// to the file itself.
 constexpr const char* kLogicalKey = "_logical_columns";
 
+/// The comment-line key that remembers the token count of each string column
+/// with more than one token (an S:2 column). A string array holds one space-joined
+/// value per atom, so the count cannot be recovered from the array alone. The
+/// reader keeps a map from name to count under this key, and the writer splits each
+/// value back into that many tokens. The key is never written to the file itself.
+constexpr const char* kStringWidthsKey = "_string_widths";
+
+/// Tokens per atom of the string array `name`: 1 unless the reader recorded more.
+std::size_t string_width(const Atoms& atoms, const std::string& name) {
+    const Value* widths = atoms.info().is_map() ? atoms.info().find(kStringWidthsKey) : nullptr;
+    if (widths != nullptr && widths->is_map()) {
+        const Value* width = widths->find(name);
+        if (width != nullptr && width->is_int() && width->as_int() >= 1) {
+            return static_cast<std::size_t>(width->as_int());
+        }
+    }
+    return 1;
+}
+
 /// Names of the int arrays that the writer must write as L columns.
 std::vector<std::string> logical_names(const Atoms& atoms) {
     std::vector<std::string> names;
@@ -692,7 +711,8 @@ Value::Map parse_key_values(std::string_view line) {
 
 /// What a Properties column means for the structure.
 enum class Role {
-    Species,     ///< species, Z, numbers, symbol
+    Species,     ///< species, symbol: the labels (and the atomic numbers when no Z column)
+    Numbers,     ///< Z, numbers: the atomic numbers, which win over a species column
     Position,    ///< pos
     Forces,      ///< forces (R:3) -> array "forces"
     Velocities,  ///< velo, velocities (R:3): set_velocities, verbatim
@@ -721,6 +741,10 @@ struct Buffer {
     std::vector<std::string> texts;
 };
 
+/// Most tokens one atom line may carry in its Properties columns. Real files use a
+/// few dozen; the cap keeps the running total far from any integer limit.
+constexpr long long kMaxPropertyTokens = 1 << 20;
+
 std::vector<Column> parse_properties(std::string_view spec, std::size_t line_no) {
     std::vector<std::string_view> parts;
     std::size_t start = 0;
@@ -739,6 +763,7 @@ std::vector<Column> parse_properties(std::string_view spec, std::size_t line_no)
     }
 
     std::vector<Column> columns;
+    long long tokens = 0;
     for (std::size_t i = 0; i < parts.size(); i += 3) {
         const std::string_view name = parts[i];
         const std::string_view type = parts[i + 1];
@@ -757,6 +782,12 @@ std::vector<Column> parse_properties(std::string_view spec, std::size_t line_no)
         if (!parse_long(count, width) || width <= 0 || width > 1000000) {
             fail_at(line_no, "Properties count '" + std::string(count) + "' is not a positive integer");
         }
+        // The running total is checked before each addition, so it cannot wrap.
+        tokens += width;
+        if (tokens > kMaxPropertyTokens) {
+            fail_at(line_no, "Properties declares more than " + std::to_string(kMaxPropertyTokens) +
+                                 " values per atom");
+        }
         columns.push_back(Column{std::string(name), kind, static_cast<std::size_t>(width), 0,
                                  Role::Real});
     }
@@ -769,8 +800,11 @@ std::vector<Column> parse_properties(std::string_view spec, std::size_t line_no)
 Role role_of(const Column& column) {
     const std::string name = lowercase(column.name);
     const std::size_t count = column.count;
-    if (name == "species" || name == "z" || name == "numbers" || name == "symbol") {
+    if (name == "species" || name == "symbol") {
         return Role::Species;
+    }
+    if (name == "z" || name == "numbers") {
+        return Role::Numbers;
     }
     if (name == "pos" || name == "positions") {
         return Role::Position;
@@ -807,19 +841,23 @@ Role role_of(const Column& column) {
 std::size_t finalize_columns(std::vector<Column>& columns, std::size_t line_no) {
     std::size_t offset = 0;
     bool has_species = false;
+    bool has_numbers = false;
     bool has_position = false;
     for (Column& column : columns) {
         column.role = role_of(column);
         column.offset = offset;
         offset += column.count;
-        if (column.role == Role::Species) {
-            if (has_species) {
-                fail_at(line_no, "Properties names more than one species column");
+        if (column.role == Role::Species || column.role == Role::Numbers) {
+            bool& seen = column.role == Role::Species ? has_species : has_numbers;
+            if (seen) {
+                fail_at(line_no, column.role == Role::Species
+                                     ? "Properties names more than one species column"
+                                     : "Properties names more than one Z column");
             }
             if (column.count != 1) {
                 fail_at(line_no, "the species column must have count 1");
             }
-            has_species = true;
+            seen = true;
         } else if (column.role == Role::Position) {
             if (has_position) {
                 fail_at(line_no, "Properties names more than one pos column");
@@ -828,11 +866,9 @@ std::size_t finalize_columns(std::vector<Column>& columns, std::size_t line_no) 
                 fail_at(line_no, "the pos column must be R:3");
             }
             has_position = true;
-        } else if (column.role == Role::Text && column.count != 1) {
-            fail_at(line_no, "string column '" + column.name + "' must have count 1");
         }
     }
-    if (!has_species) {
+    if (!has_species && !has_numbers) {
         fail_at(line_no, "Properties names no species column");
     }
     if (!has_position) {
@@ -870,24 +906,37 @@ double parse_real(const Column& column, std::string_view token, std::size_t line
                          "' is not a number");
 }
 
-/// Consume one column's tokens from an atom line.
+/// Consume one column's tokens from an atom line. The column's span must lie inside
+/// the line; the caller has already checked the line length, this is the same check
+/// stated where the indexing happens.
 void read_column(const Column& column, Buffer& buffer, const std::vector<std::string_view>& fields,
-                 std::vector<int>& numbers, std::size_t line_no) {
+                 std::size_t line_no) {
+    if (column.offset > fields.size() || column.count > fields.size() - column.offset) {
+        fail_at(line_no, "column '" + column.name + "' lies past the end of the atom line");
+    }
     const std::string_view* tokens = fields.data() + column.offset;
     switch (column.role) {
-        case Role::Species: {
+        case Role::Species:
+        case Role::Numbers: {
             const int z = species_number(tokens[0]);
             if (z < 0) {
                 fail_at(line_no, "'" + std::string(tokens[0]) +
                                      "' is not a chemical element or species label");
             }
-            numbers.push_back(z);
+            buffer.ints.push_back(z);
             buffer.texts.emplace_back(tokens[0]);
             break;
         }
-        case Role::Text:
-            buffer.texts.emplace_back(tokens[0]);
+        case Role::Text: {
+            // The tokens of a multi-token string column, joined by one space.
+            std::string value(tokens[0]);
+            for (std::size_t k = 1; k < column.count; ++k) {
+                value += ' ';
+                value += tokens[k];
+            }
+            buffer.texts.push_back(std::move(value));
             break;
+        }
         case Role::Integer:
         case Role::Tags:
             for (std::size_t k = 0; k < column.count; ++k) {
@@ -1002,6 +1051,7 @@ int apply_stage(Role role) {
         case Role::Text:
             return 2;
         case Role::Species:
+        case Role::Numbers:
         case Role::Position:
             return -1;
         default:
@@ -1066,7 +1116,7 @@ Mat3 read_vec_lines(const std::vector<std::string_view>& lines, std::size_t firs
 /// Read the frame whose atom count is on line `next`, and advance `next` past
 /// it. `fields` is scratch space.
 Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
-                 std::vector<std::string_view>& fields) {
+                 std::vector<std::string_view>& fields, const XyzReadOptions& options) {
     const std::size_t count_index = next;
     split_fields(lines[count_index], fields);
     long long natoms = 0;
@@ -1075,22 +1125,33 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
                 "expected an atom count, found '" +
                     std::string(fields.empty() ? std::string_view{} : fields.front()) + "'");
     }
-    const auto count = static_cast<std::size_t>(natoms);
-
     const std::size_t comment_index = count_index + 1;
     if (comment_index >= lines.size()) {
         fail_at(count_index + 1, "the frame ends before its comment line");
     }
+    // Every atom needs its own line, so the declared count cannot exceed the lines
+    // left. Checking it here, in 64 bits, keeps the narrowing below safe on wasm32.
+    const std::size_t lines_left = lines.size() - (comment_index + 1);
+    if (natoms > static_cast<long long>(lines_left)) {
+        fail_at(count_index + 1, "the frame declares " + std::to_string(natoms) +
+                                     " atoms but only " + std::to_string(lines_left) +
+                                     " lines follow the comment line");
+    }
+    const auto count = static_cast<std::size_t>(natoms);
     const std::string_view comment = lines[comment_index];
     const std::size_t comment_line = comment_index + 1;
 
     // VEC lines follow the atoms. As in ASE, a frame with them has a plain comment
-    // and default columns: the cell comes from the VEC lines alone.
-    const std::size_t vec_first = count <= lines.size() ? comment_index + 1 + count : lines.size();
-    const std::size_t vec_count = vec_first < lines.size() ? count_vec_lines(lines, vec_first) : 0;
+    // and default columns: the cell comes from the VEC lines alone. Plain XYZ has
+    // no VEC lines.
+    const std::size_t vec_first = comment_index + 1 + count;
+    const std::size_t vec_count =
+        options.extended && vec_first < lines.size() ? count_vec_lines(lines, vec_first) : 0;
 
-    // A comment with key=value pairs is extended XYZ; anything else is plain.
-    const bool extended = vec_count == 0 && comment.find('=') != std::string_view::npos;
+    // A comment with key=value pairs is extended XYZ; anything else is plain. Plain
+    // XYZ never parses the comment, so it is kept verbatim.
+    const bool extended =
+        options.extended && vec_count == 0 && comment.find('=') != std::string_view::npos;
     Value::Map info;
     std::vector<Column> columns;
     if (extended) {
@@ -1112,8 +1173,6 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
 
     const std::size_t tokens_per_atom = finalize_columns(columns, comment_line);
     std::vector<Buffer> buffers(columns.size());
-    std::vector<int> numbers;
-    numbers.reserve(std::min(count, lines.size()));
 
     std::size_t row = comment_index + 1;
     for (std::size_t atom = 0; atom < count; ++atom, ++row) {
@@ -1130,7 +1189,7 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
                                  std::to_string(tokens_per_atom));
         }
         for (std::size_t c = 0; c < columns.size(); ++c) {
-            read_column(columns[c], buffers[c], fields, numbers, line_no);
+            read_column(columns[c], buffers[c], fields, line_no);
         }
     }
     next = row + vec_count;
@@ -1140,16 +1199,40 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
         vec_cell = read_vec_lines(lines, row, vec_count, fields, vec_periodic);
     }
 
-    // Positions and the species labels come from their own columns.
+    // Positions, the labels and the atomic numbers come from their own columns. A Z
+    // column gives the numbers and a species column gives the labels, as ASE does
+    // when both are present. Without a Z column the species column gives both.
     std::vector<double> positions;
     std::vector<std::string> labels;
+    std::vector<std::string> z_labels;
+    std::vector<std::int64_t> species_numbers;
+    std::vector<std::int64_t> z_numbers;
+    bool has_species = false;
+    bool has_numbers = false;
     for (std::size_t c = 0; c < columns.size(); ++c) {
-        if (columns[c].role == Role::Position) {
-            positions = std::move(buffers[c].reals);
-        } else if (columns[c].role == Role::Species) {
-            labels = std::move(buffers[c].texts);
+        switch (columns[c].role) {
+            case Role::Position:
+                positions = std::move(buffers[c].reals);
+                break;
+            case Role::Species:
+                labels = std::move(buffers[c].texts);
+                species_numbers = std::move(buffers[c].ints);
+                has_species = true;
+                break;
+            case Role::Numbers:
+                z_labels = std::move(buffers[c].texts);
+                z_numbers = std::move(buffers[c].ints);
+                has_numbers = true;
+                break;
+            default:
+                break;
         }
     }
+    if (!has_species) {
+        labels = std::move(z_labels);
+    }
+    const std::vector<std::int64_t>& source = has_numbers ? z_numbers : species_numbers;
+    std::vector<int> numbers(source.begin(), source.end());
 
     Atoms atoms;
     try {
@@ -1194,7 +1277,7 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
 
     Value::Map carried;
     for (const auto& [key, value] : info) {
-        if (key == kLogicalKey ||
+        if (key == kLogicalKey || key == kStringWidthsKey ||
             (extended && (key == "Lattice" || key == "Properties" || key == "pbc"))) {
             continue;
         }
@@ -1202,13 +1285,20 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
     }
     // Remember the L columns, so the writer can write them back as L.
     Value::List logical;
+    Value::Map widths;
     for (const Column& column : columns) {
         if (column.role == Role::Logical) {
             logical.emplace_back(column.name);
         }
+        if (column.role == Role::Text && column.count > 1) {
+            widths.emplace_back(column.name, Value(static_cast<std::int64_t>(column.count)));
+        }
     }
     if (!logical.empty()) {
         carried.emplace_back(kLogicalKey, Value(std::move(logical)));
+    }
+    if (!widths.empty()) {
+        carried.emplace_back(kStringWidthsKey, Value(std::move(widths)));
     }
     atoms.set_info(Value(std::move(carried)));
     return atoms;
@@ -1217,6 +1307,17 @@ Atoms read_frame(const std::vector<std::string_view>& lines, std::size_t& next,
 // ---------------------------------------------------------------------------
 // Writing
 // ---------------------------------------------------------------------------
+
+/// Most significant digits a precision option may ask for. Doubles need 17 to
+/// round-trip, and 17 digits (with sign, point and exponent) fit the buffer below.
+constexpr int kMaxPrecision = 17;
+
+void check_precision(int precision) {
+    if (precision < 0 || precision > kMaxPrecision) {
+        throw FormatError("xyz: precision must be 0 (shortest) or 1 to " +
+                          std::to_string(kMaxPrecision) + ", got " + std::to_string(precision));
+    }
+}
 
 /// Shortest text that reads back as the same double (precision 0), or
 /// `precision` significant digits. to_chars never looks at the locale, so a
@@ -1227,11 +1328,10 @@ void append_real(std::string& out, double value, int precision) {
         precision > 0 ? std::to_chars(buffer, buffer + sizeof buffer, value,
                                       std::chars_format::general, precision)
                       : std::to_chars(buffer, buffer + sizeof buffer, value);
-    if (result.ec == std::errc{}) {
-        out.append(buffer, static_cast<std::size_t>(result.ptr - buffer));
-    } else {
-        out += '0';
+    if (result.ec != std::errc{}) {
+        throw FormatError("xyz: number " + std::to_string(value) + " cannot be written");
     }
+    out.append(buffer, static_cast<std::size_t>(result.ptr - buffer));
 }
 
 /// A float in info. "2" would read back as an integer, so a float that prints
@@ -1269,6 +1369,20 @@ void check_key(std::string_view key) {
         throw FormatError("xyz: info key '" + std::string(key) +
                           "' cannot be written on a comment line");
     }
+}
+
+/// Whether the reader would type the string `text` under `key` as something other
+/// than that same string: as a number, a T/F flag, or a _JSON value. Such a string
+/// must be written as _JSON to read back unchanged.
+bool reader_retypes(const std::string& key, const std::string& text) {
+    if (lowercase(key) == "uid") {
+        return false;  // the reader never types uid, as in ASE
+    }
+    if (text.rfind("_JSON ", 0) == 0) {
+        return true;
+    }
+    const Value typed = typed_value(key, text);
+    return !(typed.is_string() && typed.as_string() == text);
 }
 
 /// JSON text for a value, as Python's json.dumps writes it, which is how ASE
@@ -1350,10 +1464,11 @@ void append_json(std::string& out, const Value& value, int precision) {
     }
 }
 
-/// A list the comment line carries as plain text: non-empty, and every item a
-/// number, or every item a bool (T/F flags).
+/// A list the comment line carries as plain text: at least two items, and every
+/// item a number, or every item a bool (T/F flags). One item would read back as a
+/// scalar, so it is written as _JSON instead.
 bool is_plain_list(const Value::List& items) {
-    if (items.empty()) {
+    if (items.size() < 2) {
         return false;
     }
     const bool flags = items.front().is_bool();
@@ -1413,6 +1528,13 @@ void append_info_value(std::string& out, const std::string& key, const Value& va
             if (value.as_string().find_first_of("\r\n") != std::string::npos) {
                 throw FormatError("xyz: info key '" + key +
                                   "' holds a line break, which a comment line cannot carry");
+            }
+            if (reader_retypes(key, value.as_string())) {
+                // "00123" or "T" would read back as a number or flag: write it as JSON.
+                std::string json;
+                append_json(json, value, precision);
+                append_quoted(out, "_JSON " + json);
+                break;
             }
             append_quoted(out, value.as_string());
             break;
@@ -1570,14 +1692,16 @@ void append_extended(std::string& out, const Atoms& atoms, const XyzWriteOptions
                                     array.data.data(), nullptr});
     }
     if (write_labels) {
-        columns.push_back(OutColumn{"labels", 'S', 1, nullptr, nullptr, &label_list});
+        columns.push_back(OutColumn{"labels", 'S', string_width(atoms, "labels"), nullptr, nullptr,
+                                    &label_list});
     }
     for (const std::string& name : atoms.string_array_names()) {
         if (name == "labels") {
             continue;
         }
         claim(name);
-        columns.push_back(OutColumn{name, 'S', 1, nullptr, nullptr, &atoms.string_array(name)});
+        columns.push_back(OutColumn{name, 'S', string_width(atoms, name), nullptr, nullptr,
+                                    &atoms.string_array(name)});
     }
 
     out += std::to_string(count);
@@ -1620,7 +1744,7 @@ void append_extended(std::string& out, const Atoms& atoms, const XyzWriteOptions
     if (atoms.info().is_map()) {
         for (const auto& [key, value] : atoms.info().as_map()) {
             if (key == "Lattice" || key == "Properties" || key == "pbc" || key == kLogicalKey ||
-                value.is_null()) {
+                key == kStringWidthsKey || value.is_null()) {
                 continue;
             }
             check_key(key);
@@ -1632,6 +1756,7 @@ void append_extended(std::string& out, const Atoms& atoms, const XyzWriteOptions
     }
     out += '\n';
 
+    std::vector<std::string_view> parts;
     for (std::size_t atom = 0; atom < count; ++atom) {
         for (std::size_t c = 0; c < columns.size(); ++c) {
             const OutColumn& column = columns[c];
@@ -1640,8 +1765,25 @@ void append_extended(std::string& out, const Atoms& atoms, const XyzWriteOptions
             }
             if (column.type == 'S') {
                 const std::string& text = (*column.texts)[atom];
-                check_token(text, "value in column '" + column.name + "'");
-                out += text;
+                if (column.count == 1) {
+                    check_token(text, "value in column '" + column.name + "'");
+                    out += text;
+                    continue;
+                }
+                // A multi-token column: the value is its tokens, one space apart.
+                split_fields(text, parts);
+                if (parts.size() != column.count) {
+                    throw FormatError("xyz: value '" + text + "' in column '" + column.name +
+                                      "' must have " + std::to_string(column.count) +
+                                      " tokens");
+                }
+                for (std::size_t k = 0; k < parts.size(); ++k) {
+                    check_token(parts[k], "value in column '" + column.name + "'");
+                    if (k != 0) {
+                        out += ' ';
+                    }
+                    out += parts[k];
+                }
                 continue;
             }
             for (std::size_t k = 0; k < column.count; ++k) {
@@ -1672,7 +1814,7 @@ void append_frame(std::string& out, const Atoms& atoms, const XyzWriteOptions& o
 
 }  // namespace
 
-std::vector<Atoms> read_xyz(std::string_view text) {
+std::vector<Atoms> read_xyz(std::string_view text, const XyzReadOptions& options) {
     const std::vector<std::string_view> lines = split_lines(text);
     std::vector<Atoms> frames;
     std::vector<std::string_view> fields;
@@ -1689,18 +1831,20 @@ std::vector<Atoms> read_xyz(std::string_view text) {
         if (next >= lines.size()) {
             break;
         }
-        frames.push_back(read_frame(lines, next, fields));
+        frames.push_back(read_frame(lines, next, fields, options));
     }
     return frames;
 }
 
 std::string write_xyz(const Atoms& atoms, const XyzWriteOptions& options) {
+    check_precision(options.precision);
     std::string out;
     append_frame(out, atoms, options);
     return out;
 }
 
 std::string write_xyz(const std::vector<Atoms>& frames, const XyzWriteOptions& options) {
+    check_precision(options.precision);
     std::string out;
     for (const Atoms& atoms : frames) {
         append_frame(out, atoms, options);

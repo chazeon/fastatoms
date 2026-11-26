@@ -499,4 +499,57 @@ FA_TEST(cif_deterministic) {
     FA_CHECK(first.positions() == second.positions());
 }
 
+FA_TEST(cif_merge_finds_image_in_unreduced_cell) {
+    // Cell rows (10,0,0), (1000,0.01,0), (0,0,10). The sites at fractional
+    // (0,0,0) and (0,0.1,0) differ by (100,0.001,0), i.e. 0.001 Å along y once
+    // the lattice vector (-100,0,0) is added: the nearest image has an offset
+    // of -10 in the first fractional coordinate, which a search around the
+    // fractional difference does not reach.
+    const std::string text =
+        "data_t\n_cell_length_a 10\n_cell_length_b 1000.0000000499999\n"
+        "_cell_length_c 10\n_cell_angle_alpha 90\n_cell_angle_beta 90\n"
+        "_cell_angle_gamma 0.0005729578188365804\n"
+        "_symmetry_space_group_name_H-M 'P 1'\nloop_\n" +
+        std::string(kSiteHeader) + "Fe1 Fe 0 0 0\nFe2 Fe 0 0.1 0\n";
+    CifReadOptions merged;
+    merged.disorder = CifDisorder::MaxOccupancy;
+    FA_CHECK(read_cif(text, merged).at(0).size() == 1);
+    // Keep-all does not merge across sites, so both stay.
+    FA_CHECK(read_cif(text).at(0).size() == 2);
+}
+
+FA_TEST(cif_writer_quotes_missing_value_labels) {
+    // A bare ? or . is a missing value; a label spelled that way must stay quoted.
+    Atoms atoms(std::vector<int>{26, 26}, std::vector<double>{1.0, 1.0, 1.0, 2.0, 2.0, 2.0},
+                Cell::cubic(10.0));
+    atoms.set_string_array("labels", {"?", "."});
+    const std::string text = write_cif(atoms);
+    FA_CHECK(text.find("'?'") != std::string::npos);
+    FA_CHECK(text.find("'.'") != std::string::npos);
+    const Atoms again = read_cif(text).at(0);
+    FA_CHECK(again.labels() == (std::vector<std::string>{"?", "."}));
+}
+
+FA_TEST(cif_deuterium_and_tritium_masses) {
+    // tests/data/cif/deuterium.cif, read by ASE: both images of each D site
+    // get 2.01355 (ase.io.cif), the H sites keep 1.008. A D2+ label counts as D.
+    const Atoms atoms = read_cif(read_text("deuterium.cif")).at(0);
+    FA_CHECK(atoms.size() == 6);
+    FA_CHECK(atoms.has_masses());
+    const std::vector<double> masses = atoms.masses();
+    const std::vector<std::string> labels = atoms.labels();
+    for (std::size_t i = 0; i < atoms.size(); ++i) {
+        FA_CHECK_CLOSE(masses[i], labels[i][0] == 'D' ? 2.01355 : 1.008, 1e-12);
+    }
+
+    const Atoms tritium =
+        read_cif(cubic_block("", kSiteHeader, "T1 T 0.5 0.5 0.5\nH1 H 0.25 0.25 0.25\n")).at(0);
+    FA_CHECK(tritium.size() == 2);
+    FA_CHECK_CLOSE(tritium.masses().at(0), 3.0160492, 1e-12);
+    FA_CHECK_CLOSE(tritium.masses().at(1), 1.008, 1e-12);
+
+    // Without isotope sites no per-atom masses are stored.
+    FA_CHECK(!read_cif(read_text("nacl.cif")).at(0).has_masses());
+}
+
 FA_TEST_MAIN()

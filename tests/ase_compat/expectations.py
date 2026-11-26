@@ -49,8 +49,8 @@ _CALC = (
     "SinglePointCalculator) are ASE internals. fastatoms has no calculator."
 )
 _LDATA_MASS = (
-    "fastatoms refuses to infer an element from a mass more than 0.1 amu from any "
-    "element and asks for types=. ASE takes the nearest element. Deliberate."
+    "fastatoms infers an element only from a mass within 0.1 amu of one; any other "
+    "type becomes the dummy X with label 'k'. ASE takes the nearest element. Deliberate."
 )
 _LDATA_SCOPE = (
     "fastatoms skips the Bonds/Angles/Dihedrals sections of LAMMPS data files and "
@@ -155,7 +155,7 @@ EXPECTATIONS: list[Expectation] = [
     ),
     # -- LAMMPS data -------------------------------------------------------------------
     Expectation(_LDATA_READ + "test_lammpsdata_read", "xfail", "c", _LDATA_MASS, modes=READ),
-    Expectation(_LDATA_RW + "test_types", "xfail", "c", _LDATA_MASS + " (write side: bonds not written)"),
+    Expectation(_LDATA_RW + "test_types", "xfail", "c", "bonds are not written", modes=("write",)),
     Expectation(_LDATA_RW + "test_bonds", "xfail", "c", _LDATA_SCOPE),
     Expectation(_LDATA_CONN + "test_connectivity*", "xfail", "c", _LDATA_SCOPE, modes=READ),
     Expectation(

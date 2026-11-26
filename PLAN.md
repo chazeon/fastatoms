@@ -178,12 +178,18 @@ line). Read into `velocities`.
   otherwise they are kept as an `image` array.
 
 **Type → element map, in priority order:**
-1. an explicit `types={1:"Fe",2:"O"}` (or a list);
+1. an explicit `types={1:"Fe",2:"O"}` (or a list); a partial map is allowed,
+   and an entry that names no element is an error;
 2. the `Atom Type Labels` section (LAMMPS 2023+; labels may replace type
    numbers in Masses, Atoms and dump type columns);
-3. `Masses` comments (`1 55.845 # Fe`) whose element agrees with the mass;
+3. `Masses` comments (`1 55.845 # Fe`) whose element agrees with the mass; a
+   second comment word that names the element (`# C14 C`, written for
+   isotopes) is taken as written when it agrees with the label;
 4. mass matching against the element table (nearest within 0.1 u);
-5. an error.
+5. otherwise the type is the dummy element X (Z = 0) labelled by its number
+   (`"2"`), the same as a dump type with no map. A Masses comment that names
+   an element whose mass disagrees with the stated mass, and no element
+   matches that mass, is an error (inconsistent input, not merely unknown).
 - The type number is kept as the `type` array; the label is the map value,
   so `Fe1` and `Fe2` can both be iron.
 

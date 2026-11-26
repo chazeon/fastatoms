@@ -30,6 +30,32 @@ void require_length(const char* what, std::size_t got, std::size_t expected) {
     }
 }
 
+/// `count * width` elements of T, or std::length_error when that does not fit
+/// in a std::vector<T>. On wasm32 an unchecked product wraps and silently
+/// yields a buffer far smaller than the indices written into it.
+template <typename T>
+std::size_t checked_element_count(std::size_t count, std::size_t width, const char* what) {
+    const std::size_t limit = std::vector<T>().max_size();
+    if (width != 0 && count > limit / width) {
+        throw std::length_error(std::string(what) + ": " + std::to_string(count) + " x " +
+                                std::to_string(width) + " values exceed the maximum array size");
+    }
+    return count * width;
+}
+
+/// printf-style formatting of one double without a fixed-size buffer. The
+/// snprintf return value is the length the output needs, which can exceed any
+/// buffer (`%.4f` of 1e40 has 46 characters).
+std::string format_double(const char* format, double value) {
+    const int n = std::snprintf(nullptr, 0, format, value);
+    if (n < 0) {
+        throw std::runtime_error("Atoms::to_string: number formatting failed");
+    }
+    std::vector<char> buffer(static_cast<std::size_t>(n) + 1);
+    std::snprintf(buffer.data(), buffer.size(), format, value);
+    return std::string(buffer.data(), static_cast<std::size_t>(n));
+}
+
 /// Copy `indices` rows out of a per-atom array with `ncols` components.
 template <typename T>
 std::vector<T> gather(const std::vector<T>& src, std::size_t ncols,
@@ -238,9 +264,9 @@ void Atoms::set_cell(const Mat3& matrix, bool scale_atoms) {
 
 void Atoms::set_cell(const Cell& cell, bool scale_atoms) {
     if (scale_atoms) {
-        if (!cell_.is_invertible()) {
+        if (!cell_.has_scaled_coordinates()) {
             throw std::invalid_argument(
-                "set_cell(scale_atoms=true): the current cell is not invertible");
+                "set_cell(scale_atoms=true): the current cell has no fractional coordinates");
         }
         const std::vector<double> scaled = scaled_positions();
         cell_ = cell;
@@ -253,9 +279,10 @@ void Atoms::set_cell(const Cell& cell, bool scale_atoms) {
 std::vector<double> Atoms::scaled_positions(bool wrapped) const {
     const std::size_t n = size();
     std::vector<double> out(3 * n);
-    if (!cell_.is_invertible()) {
+    if (!cell_.has_scaled_coordinates()) {
         throw std::invalid_argument(
-            "scaled_positions: the cell is not invertible (it spans fewer than three dimensions)");
+            "scaled_positions: the cell has no fractional coordinates (it is zero or its "
+            "nonzero lattice vectors are linearly dependent)");
     }
     for (std::size_t i = 0; i < n; ++i) {
         Vec3 s = cell_.scaled(position(i));
@@ -275,7 +302,7 @@ void Atoms::set_scaled_positions(const std::vector<double>& scaled) {
 }
 
 void Atoms::wrap(double eps) {
-    if (!cell_.any_pbc() || !cell_.is_invertible()) {
+    if (!cell_.any_pbc() || !cell_.has_scaled_coordinates()) {
         return;
     }
     const std::size_t n = size();
@@ -396,7 +423,8 @@ void Atoms::set_array(const std::string& name, const std::vector<double>& data, 
     if (ncols == 0) {
         throw std::invalid_argument("set_array: ncols must be at least 1");
     }
-    require_length(("set_array('" + name + "')").c_str(), data.size(), size() * ncols);
+    require_length(("set_array('" + name + "')").c_str(), data.size(),
+                   checked_element_count<double>(size(), ncols, "set_array"));
     extra_[name] = Array{data, ncols};
 }
 
@@ -426,7 +454,8 @@ void Atoms::set_int_array(const std::string& name, const std::vector<std::int64_
     if (ncols == 0) {
         throw std::invalid_argument("set_int_array: ncols must be at least 1");
     }
-    require_length(("set_int_array('" + name + "')").c_str(), data.size(), size() * ncols);
+    require_length(("set_int_array('" + name + "')").c_str(), data.size(),
+                   checked_element_count<std::int64_t>(size(), ncols, "set_int_array"));
     extra_int_[name] = IntArray{data, ncols};
 }
 
@@ -509,7 +538,7 @@ std::vector<double> Atoms::distances_from(std::size_t i, bool mic) const {
 
 std::vector<double> Atoms::all_distances(bool mic) const {
     const std::size_t n = size();
-    std::vector<double> out(n * n, 0.0);
+    std::vector<double> out(checked_element_count<double>(n, n, "all_distances"), 0.0);
     for (std::size_t i = 0; i < n; ++i) {
         const Vec3 ri = position(i);
         for (std::size_t j = i + 1; j < n; ++j) {
@@ -759,6 +788,26 @@ void Atoms::extend(const Atoms& other) {
     }
     const std::size_t n_this = size();
     const std::size_t n_other = other.size();
+
+    // Check every shared array's width before mutating anything: a mismatch
+    // would otherwise replace the appended values with zeros.
+    for (const auto& [name, array] : extra_) {
+        const auto it = other.extra_.find(name);
+        if (it != other.extra_.end() && it->second.ncols != array.ncols) {
+            throw std::invalid_argument("extend: array '" + name + "' has " +
+                                        std::to_string(array.ncols) + " columns here but " +
+                                        std::to_string(it->second.ncols) + " in the appended atoms");
+        }
+    }
+    for (const auto& [name, array] : extra_int_) {
+        const auto it = other.extra_int_.find(name);
+        if (it != other.extra_int_.end() && it->second.ncols != array.ncols) {
+            throw std::invalid_argument("extend: integer array '" + name + "' has " +
+                                        std::to_string(array.ncols) + " columns here but " +
+                                        std::to_string(it->second.ncols) + " in the appended atoms");
+        }
+    }
+
     if (n_other == 0) {
         return;
     }
@@ -899,12 +948,15 @@ Atoms Atoms::repeat(int nx, int ny, int nz) const {
         throw std::invalid_argument("repeat: all repetition counts must be at least 1");
     }
     const std::size_t n = size();
-    const std::size_t images = static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny) *
-                               static_cast<std::size_t>(nz);
+    const std::size_t images = checked_element_count<int>(
+        checked_element_count<int>(static_cast<std::size_t>(nx), static_cast<std::size_t>(ny),
+                                   "repeat"),
+        static_cast<std::size_t>(nz), "repeat");
+    const std::size_t total = checked_element_count<int>(n, images, "repeat");
 
     Atoms out;
-    out.numbers_.reserve(n * images);
-    out.positions_.reserve(3 * n * images);
+    out.numbers_.reserve(total);
+    out.positions_.reserve(checked_element_count<double>(total, 3, "repeat"));
 
     const Mat3& m = cell_.matrix();
     for (int ix = 0; ix < nx; ++ix) {
@@ -959,9 +1011,8 @@ std::string Atoms::to_string() const {
     std::string out = "Atoms(" + formula() + ", n=" + std::to_string(size());
     if (!cell_.is_zero()) {
         const Vec3 l = cell_.lengths();
-        char buffer[96];
-        const int n = std::snprintf(buffer, sizeof buffer, ", cell=[%.4f, %.4f, %.4f]", l.x, l.y, l.z);
-        out.append(buffer, static_cast<std::size_t>(n));
+        out += ", cell=[" + format_double("%.4f", l.x) + ", " + format_double("%.4f", l.y) + ", " +
+               format_double("%.4f", l.z) + "]";
     }
     const auto& p = cell_.pbc();
     out += std::string(", pbc=[") + (p[0] ? "True" : "False") + ", " + (p[1] ? "True" : "False") +

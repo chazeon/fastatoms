@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -276,12 +277,25 @@ Header parse_header(const Lines& lines, std::size_t first, const PoscarReadOptio
     if (count_tokens.empty()) {
         fail(counts_at, "no atom counts");
     }
+    // Every atom needs its own coordinate line after the counts line. The
+    // bound is checked per count, before the sum, so the sum cannot overflow,
+    // and it keeps 3 * size() representable. Nothing is allocated from a count
+    // that fails it.
+    constexpr std::size_t kMaxFor3 = std::numeric_limits<std::size_t>::max() / 3;
+    const std::size_t remaining = std::min(lines.size() - h.next, kMaxFor3);
+    std::size_t total = 0;
     for (const std::string_view t : count_tokens) {
         const auto c = parse_integer(t);
         if (!c || *c < 0) {
             fail(counts_at, "bad atom count '" + std::string(t) + "'");
         }
-        h.counts.push_back(static_cast<std::size_t>(*c));
+        const auto count = static_cast<std::uint64_t>(*c);
+        if (count > remaining - total) {
+            fail(counts_at, "atom count '" + std::string(t) + "' needs more coordinate lines than the " +
+                                std::to_string(remaining) + " left in the file");
+        }
+        total += static_cast<std::size_t>(count);
+        h.counts.push_back(static_cast<std::size_t>(count));
     }
 
     auto resolve = [&](const std::vector<std::string>& names, std::size_t index) {
@@ -499,30 +513,35 @@ void append_vec(std::string& out, const double* p) {
     }
 }
 
-/// An XDATCAR frame line: `Direct configuration=     1` (VASP writes this,
-/// also `Cartesian configuration`), or the bare `configuration=N`. Matched on
-/// the leading words, case-insensitively, so a comment line that merely
-/// contains the word is not one. `configuration 2` (no '=') is a comment.
-bool is_configuration_line(std::string_view line) {
+/// The coordinate mode of an XDATCAR frame line, or nullopt if the line is not
+/// one. The lines are `Direct configuration=     1` (VASP writes this, also
+/// `Cartesian configuration`), or the bare `configuration=N`, which is Direct.
+/// Matched on the leading words, case-insensitively, so a comment line that
+/// merely contains the word is not one. `configuration 2` (no '=') is a comment.
+/// Returns true for Cartesian, false for Direct.
+std::optional<bool> configuration_mode(std::string_view line) {
     const Tokens t = tokens(line);
     if (t.empty()) {
-        return false;
+        return std::nullopt;
     }
     std::string first(t[0]);
     for (char& c : first) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     if (first.starts_with("configuration=")) {
-        return true;
+        return false;
     }
     if (t.size() < 2 || (first != "direct" && first != "cartesian")) {
-        return false;
+        return std::nullopt;
     }
     std::string second(t[1]);
     for (char& c : second) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
-    return second.starts_with("configuration");
+    if (!second.starts_with("configuration")) {
+        return std::nullopt;
+    }
+    return first == "cartesian";
 }
 
 /// Atoms grouped for writing: each group is one species line entry.
@@ -625,14 +644,17 @@ std::string write_poscar(const Atoms& atoms, const PoscarWriteOptions& options) 
         throw FormatError("vasp: Direct coordinates need an invertible cell; use direct=false");
     }
 
+    // A VASP 4 file has no species line, so the species ride on the comment
+    // line: the element symbols, one per count. Plain symbols, since VASP 4
+    // era tools know nothing of labels. The reader takes every comment token
+    // as a species, so a VASP 4 comment cannot carry anything else.
+    std::string species_line;
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+        species_line += (g == 0 ? "" : " ") + atoms.symbol(groups[g].atoms.front());
+    }
     std::string comment = options.comment;
     if (comment.empty() && !options.vasp5) {
-        // A VASP 4 file has no species line; by convention (and for our own
-        // reader) the element symbols go on the comment line instead, one per
-        // count. Plain symbols, since VASP 4 era tools know nothing of labels.
-        for (std::size_t g = 0; g < groups.size(); ++g) {
-            comment += (g == 0 ? "" : " ") + atoms.symbol(groups[g].atoms.front());
-        }
+        comment = species_line;
     }
     if (comment.empty()) {
         const Value* c = atoms.info().find("comment");
@@ -645,6 +667,11 @@ std::string write_poscar(const Atoms& atoms, const PoscarWriteOptions& options) 
     }
     std::replace(comment.begin(), comment.end(), '\n', ' ');
     std::replace(comment.begin(), comment.end(), '\r', ' ');
+    if (!options.vasp5 && tokens(comment) != tokens(species_line)) {
+        throw FormatError("vasp: with vasp5=false the comment line is the species line, so the "
+                          "comment must be \"" + species_line + "\" or empty; "
+                          "use vasp5=true to write a comment of your own");
+    }
 
     std::string out = comment + "\n1.0\n";
     for (std::size_t r = 0; r < 3; ++r) {
@@ -706,7 +733,11 @@ std::vector<Atoms> read_xdatcar(std::string_view text, const PoscarReadOptions& 
         // Fixed-cell files have one header and many configuration blocks;
         // variable-cell files repeat the header before each block.
         const std::size_t start = i;
-        if (!header || !is_configuration_line(lines[i])) {
+        std::optional<bool> cartesian;
+        if (header) {
+            cartesian = configuration_mode(lines[i]);
+        }
+        if (!cartesian) {
             // A header is at least six lines, then the configuration line.
             if (header && lines.size() - start < 7 + header->size()) {
                 truncated = true;
@@ -718,7 +749,8 @@ std::vector<Atoms> read_xdatcar(std::string_view text, const PoscarReadOptions& 
                 truncated = true;
                 break;
             }
-            if (!is_configuration_line(lines[i])) {
+            cartesian = configuration_mode(lines[i]);
+            if (!cartesian) {
                 fail(i, "expected a 'Direct configuration=' line");
             }
         }
@@ -744,7 +776,7 @@ std::vector<Atoms> read_xdatcar(std::string_view text, const PoscarReadOptions& 
         if (truncated) {
             break;  // an incomplete last frame is dropped
         }
-        frames.push_back(make_atoms(*header, coords, false, {}));
+        frames.push_back(make_atoms(*header, coords, *cartesian, {}));
         i = skip_blank(lines, i);
     }
 

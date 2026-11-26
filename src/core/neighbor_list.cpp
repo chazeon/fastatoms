@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -18,6 +19,12 @@ namespace {
 
 /// vesin refuses cutoffs at or below this value.
 constexpr double kMinCutoff = 1e-6;
+
+/// Cutoffs below this are searched in a scaled copy of the geometry, so that
+/// the vesin cutoff stays well above kMinCutoff. The pairs are still tested
+/// against the original cutoff, and D and d are recomputed from the original
+/// coordinates, so the scaling only affects which candidates vesin returns.
+constexpr double kScaleBelow = 1e-3;
 
 /// Relative tolerance for declaring a periodic part of the cell singular.
 constexpr double kSingularTol = 1e-12;
@@ -123,8 +130,13 @@ void check_periodic_cell(const Mat3& cell, const std::array<bool, 3>& pbc) {
 
 /// vesin is asked for a slightly larger cutoff than the requested one. The
 /// margin covers the rounding difference between vesin's distances and the
-/// ones recomputed in finalize_pairs, so no pair with d < cutoff is lost.
-[[nodiscard]] double search_cutoff(double cutoff) { return cutoff * (1.0 + 1e-10) + 1e-12; }
+/// ones recomputed in finalize_pairs, so no pair with d < cutoff is lost. The
+/// rounding error of a displacement grows with the coordinate magnitude, not
+/// with the cutoff, so the margin also includes a few ulps of max_abs.
+[[nodiscard]] double search_cutoff(double cutoff, double max_abs) {
+    return cutoff * (1.0 + 1e-10) + 1e-12 +
+           max_abs * 4.0 * std::numeric_limits<double>::epsilon();
+}
 
 /// D = r_j - r_i + S @ cell and d = |D|, evaluated the way ASE's
 /// primitive_neighbor_list does it: S @ cell is a BLAS product, which on the
@@ -227,9 +239,6 @@ NeighborPairs neighbor_pairs(const double* positions, std::size_t n, const Mat3&
     if (!std::isfinite(options.cutoff) || options.cutoff <= 0.0) {
         throw std::invalid_argument("neighbor_pairs: cutoff must be finite and positive");
     }
-    if (options.cutoff <= kMinCutoff) {
-        throw std::invalid_argument("neighbor_pairs: cutoff is below the vesin minimum of 1e-6");
-    }
     check_periodic_cell(cell, pbc);
 
     NeighborPairs out;
@@ -240,8 +249,32 @@ NeighborPairs neighbor_pairs(const double* positions, std::size_t n, const Mat3&
         throw std::invalid_argument("neighbor_pairs: positions is a null pointer");
     }
 
-    const double search = search_cutoff(options.cutoff);
-    const Mat3 box = vesin_box(positions, n, cell, pbc, search);
+    // Search geometry: the original, or a copy scaled so that the cutoff is
+    // above vesin's minimum. Scaling every coordinate and the cell by the same
+    // factor leaves the integer shifts unchanged.
+    double max_abs = 0.0;
+    for (std::size_t k = 0; k < 3 * n; ++k) {
+        max_abs = std::max(max_abs, std::abs(positions[k]));
+    }
+    const double scale = options.cutoff < kScaleBelow ? kScaleBelow / options.cutoff : 1.0;
+    const double search = search_cutoff(options.cutoff, max_abs) * scale;
+    if (!std::isfinite(scale) || !std::isfinite(search) || search <= kMinCutoff) {
+        throw std::invalid_argument("neighbor_pairs: cutoff is too small to search");
+    }
+
+    std::vector<double> scaled_positions;
+    const double* search_positions = positions;
+    Mat3 search_cell = cell;
+    if (scale != 1.0) {
+        scaled_positions.resize(3 * n);
+        for (std::size_t k = 0; k < 3 * n; ++k) {
+            scaled_positions[k] = positions[k] * scale;
+        }
+        search_positions = scaled_positions.data();
+        search_cell = cell * scale;
+    }
+
+    const Mat3 box = vesin_box(search_positions, n, search_cell, pbc, search);
     double box_c[3][3];
     for (std::size_t r = 0; r < 3; ++r) {
         for (std::size_t c = 0; c < 3; ++c) {
@@ -265,7 +298,7 @@ NeighborPairs neighbor_pairs(const double* positions, std::size_t n, const Mat3&
     vopts.return_distances = false;
     vopts.return_vectors = false;
 
-    const auto* points = reinterpret_cast<const double (*)[3]>(positions);
+    const auto* points = reinterpret_cast<const double (*)[3]>(search_positions);
     VesinList result;
     const char* error = nullptr;
     const int status = vesin_neighbors(points, n, box_c, periodic_c, VesinDevice{VesinCPU, 0},

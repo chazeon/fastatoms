@@ -111,7 +111,13 @@ std::int64_t Value::as_int() const {
     if (is_int()) {
         return int_;
     }
-    if (is_float() && float_ == std::floor(float_) && std::isfinite(float_)) {
+    if (is_float() && std::isfinite(float_) && float_ == std::floor(float_)) {
+        // Casting a double outside the int64 range is undefined behaviour, so
+        // the half-open range [-2^63, 2^63) is checked first.
+        if (float_ < -9223372036854775808.0 || float_ >= 9223372036854775808.0) {
+            throw InputError("expected a 64-bit integer value but found " +
+                             std::to_string(float_) + ", which is out of range");
+        }
         return static_cast<std::int64_t>(float_);
     }
     type_error("integer");

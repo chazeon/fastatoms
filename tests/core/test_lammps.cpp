@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include <clocale>
 #include <cstdint>
 #include <fstream>
 #include <sstream>
@@ -139,15 +140,94 @@ FA_TEST(mass_only_infers_elements) {
     FA_CHECK(t == std::vector<std::int64_t>({1, 2, 1, 2, 2, 1}));
 }
 
-FA_TEST(mass_inference_without_match_throws) {
+FA_TEST(mass_without_match_is_dummy_x) {
+    // No element has mass 100 and there is no comment: the type is unresolved,
+    // so it becomes the dummy X labelled by its number.
     const std::string text =
         "title\n\n1 atoms\n1 atom types\n\n0 5 xlo xhi\n0 5 ylo yhi\n0 5 zlo zhi\n\n"
         "Masses\n\n1 100.0\n\nAtoms # atomic\n\n1 1 0 0 0\n";
-    FA_CHECK_THROWS(read_lammps_data(text), FormatError);
+    const Atoms atoms = read_lammps_data(text);
+    FA_CHECK(atoms.numbers() == std::vector<int>({0}));
+    FA_CHECK(atoms.labels() == std::vector<std::string>({"1"}));
     const std::string no_masses =
         "title\n\n1 atoms\n1 atom types\n\n0 5 xlo xhi\n0 5 ylo yhi\n0 5 zlo zhi\n\n"
         "Atoms # atomic\n\n1 1 0 0 0\n";
-    FA_CHECK_THROWS(read_lammps_data(no_masses), FormatError);
+    const Atoms bare = read_lammps_data(no_masses);
+    FA_CHECK(bare.numbers() == std::vector<int>({0}));
+    FA_CHECK(bare.labels() == std::vector<std::string>({"1"}));
+}
+
+FA_TEST(masses_comment_disagreeing_with_mass_throws) {
+    // "C" names carbon, whose mass is 12.011; 1000 matches no element.
+    const std::string text =
+        "t\n\n1 atoms\n1 atom types\n\n0 5 xlo xhi\n0 5 ylo yhi\n0 5 zlo zhi\n\n"
+        "Masses\n\n1 1000 # C\n\nAtoms # atomic\n\n1 1 0 0 0\n";
+    FA_CHECK(!format_error_of([&] { (void)read_lammps_data(text); }).empty());
+}
+
+FA_TEST(partial_types_map_data_resolves_rest_as_dummy) {
+    // Type 1 is named by the map; type 2 has no label, comment or mass, so it
+    // is X labelled "2" rather than an error.
+    const std::string text =
+        "t\n\n2 atoms\n2 atom types\n\n0 5 xlo xhi\n0 5 ylo yhi\n0 5 zlo zhi\n\n"
+        "Atoms # atomic\n\n1 1 0 0 0\n2 2 1 1 1\n";
+    LammpsDataReadOptions options;
+    options.types = {{1, "Fe"}};
+    const Atoms atoms = read_lammps_data(text, options);
+    FA_CHECK(atoms.numbers() == std::vector<int>({26, 0}));
+    FA_CHECK(atoms.labels() == std::vector<std::string>({"Fe", "2"}));
+    FA_CHECK(atoms.int_array("type").data == std::vector<std::int64_t>({1, 2}));
+}
+
+FA_TEST(map_label_naming_no_element_throws) {
+    LammpsDataReadOptions options;
+    options.types = {{1, "Qq"}};
+    FA_CHECK(!format_error_of([&] {
+                  (void)read_lammps_data(read_fixture("nohint_atomic.data"), options);
+              }).empty());
+    LammpsDumpReadOptions dump_options;
+    dump_options.types = {{1, "Qq"}};
+    FA_CHECK(!format_error_of([&] {
+                  (void)read_lammps_dump(read_fixture("unsorted_ids.lammpstrj"), dump_options);
+              }).empty());
+}
+
+FA_TEST(partial_types_map_dump_resolves_rest_as_dummy) {
+    const std::string two =
+        "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS pp pp pp\n0 5\n0 5\n0 5\n"
+        "ITEM: ATOMS id type x y z\n1 1 0 0 0\n2 2 1 1 1\n";
+    LammpsDumpReadOptions options;
+    options.types = {{1, "Fe"}};
+    const Atoms atoms = read_lammps_dump(two, options).at(0);
+    FA_CHECK(atoms.numbers() == std::vector<int>({26, 0}));
+    FA_CHECK(atoms.labels() == std::vector<std::string>({"Fe", "2"}));
+}
+
+FA_TEST(masses_comment_element_word_is_taken_as_written) {
+    // "C14 C" with a mass far from carbon's tabulated weight: the second word
+    // is the element, and it agrees with the label.
+    const std::string text =
+        "t\n\n1 atoms\n1 atom types\n\n0 5 xlo xhi\n0 5 ylo yhi\n0 5 zlo zhi\n\n"
+        "Masses\n\n1 14.00324 # C14 C\n\nAtoms # atomic\n\n1 1 0 0 0\n";
+    const Atoms atoms = read_lammps_data(text);
+    FA_CHECK(atoms.numbers() == std::vector<int>({6}));
+    FA_CHECK(atoms.labels() == std::vector<std::string>({"C14"}));
+    FA_CHECK_CLOSE(atoms.mass(0), 14.00324, 1e-9);
+}
+
+FA_TEST(data_writer_recovers_element_of_isotope_label) {
+    // Carbon-14 is labelled "C14" with a mass far from carbon's weight. The
+    // writer adds the element to the Masses comment, so it reads back as carbon.
+    Atoms atoms(std::vector<int>{6, 26}, {0.0, 0.0, 0.0, 1.0, 1.0, 1.0}, Cell::cubic(4.0));
+    atoms.set_string_array("labels", {"C14", "Fe"});
+    atoms.set_masses({14.00324, 55.845});
+    const std::string text = write_lammps_data(atoms);
+    FA_CHECK(text.find("# C14 C") != std::string::npos);
+    FA_CHECK(text.find("# Fe\n") != std::string::npos);  // Fe agrees: no extra word
+    const Atoms back = read_lammps_data(text);
+    FA_CHECK(back.numbers() == std::vector<int>({6, 26}));
+    FA_CHECK(back.labels() == std::vector<std::string>({"C14", "Fe"}));
+    FA_CHECK_CLOSE(back.mass(0), 14.00324, 1e-9);
 }
 
 FA_TEST(types_map_gives_both_types_iron) {
@@ -753,6 +833,129 @@ FA_TEST(dump_strips_bom) {
     const auto frames = read_lammps_dump(with_bom(read_fixture("type_labels.lammpstrj")));
     FA_CHECK(frames.size() == 1);
     FA_CHECK(frames[0].labels() == std::vector<std::string>({"Fe", "O", "Fe2"}));
+}
+
+/// A two-frame-free dump header for `n` atoms over a 5 x 5 x 5 box.
+std::string dump_head(const std::string& n) {
+    return "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n" + n +
+           "\nITEM: BOX BOUNDS pp pp pp\n0 5\n0 5\n0 5\n";
+}
+
+FA_TEST(dump_repeated_required_blocks_are_errors) {
+    // A second NUMBER OF ATOMS would change the count the columns were read with.
+    const std::string count_twice = dump_head("1") + "ITEM: ATOMS id type x y z\n1 1 0 0 0\n"
+                                    "ITEM: NUMBER OF ATOMS\n2\n";
+    const std::string message = format_error_of([&] { (void)read_lammps_dump(count_twice); });
+    FA_CHECK(message.find("NUMBER OF ATOMS") != std::string::npos);
+    const std::string atoms_twice = dump_head("1") + "ITEM: ATOMS id type x y z\n1 1 0 0 0\n"
+                                    "ITEM: ATOMS id type x y z\n1 1 0 0 0\n";
+    FA_CHECK(!format_error_of([&] { (void)read_lammps_dump(atoms_twice); }).empty());
+    const std::string box_twice =
+        "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n1\nITEM: BOX BOUNDS pp pp pp\n0 5\n0 5\n0 5\n"
+        "ITEM: BOX BOUNDS pp pp pp\n0 5\n0 5\n0 5\nITEM: ATOMS id type x y z\n1 1 0 0 0\n";
+    FA_CHECK(!format_error_of([&] { (void)read_lammps_dump(box_twice); }).empty());
+}
+
+FA_TEST(dump_wide_header_with_short_rows_fails_fast) {
+    // 10,000 columns and 10,000 short rows: the first row is rejected before
+    // any per-column storage is sized from the header.
+    std::string header = "ITEM: ATOMS";
+    for (int c = 0; c < 10000; ++c) {
+        header += " c" + std::to_string(c);
+    }
+    std::string text = dump_head("10000") + header + "\n";
+    for (int r = 0; r < 10000; ++r) {
+        text += "1 2\n";
+    }
+    FA_CHECK(!format_error_of([&] { (void)read_lammps_dump(text); }).empty());
+}
+
+FA_TEST(dump_count_beyond_input_is_truncated) {
+    // A count of 2^32 + 1 cannot be served by one row: the frame is truncated,
+    // and as the only frame it is an error. Nothing narrows to 1 atom.
+    const std::string text = dump_head("4294967297") + "ITEM: ATOMS id type x y z\n1 1 0 0 0\n";
+    FA_CHECK(!format_error_of([&] { (void)read_lammps_dump(text); }).empty());
+}
+
+FA_TEST(dump_final_row_with_too_many_fields_is_error) {
+    // A complete row with an extra field is malformed, not a truncated tail.
+    const std::string text = dump_head("2") + "ITEM: ATOMS id type x y z\n1 1 0 0 0\n2 1 1 1 1 9\n";
+    FA_CHECK(!format_error_of([&] { (void)read_lammps_dump(text); }).empty());
+}
+
+FA_TEST(dump_truncated_box_block_after_good_frame) {
+    // The second frame ends after two BOX BOUNDS rows and a newline: it is a
+    // truncated frame, so the good first frame is returned and marked.
+    const std::string text =
+        dump_head("1") + "ITEM: ATOMS id type x y z\n1 1 0 0 0\n"
+        "ITEM: TIMESTEP\n1\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS pp pp pp\n0 5\n0 5\n";
+    const auto frames = read_lammps_dump(text);
+    FA_CHECK(frames.size() == 1);
+    FA_CHECK(frames[0].size() == 1);
+    FA_CHECK(frames[0].info()["truncated"].as_bool());
+}
+
+FA_TEST(dump_type_kept_alongside_element_column) {
+    // The element names the species; the type column is still an integer array.
+    const Atoms atoms = read_lammps_dump(
+        one_atom_dump("ITEM: BOX BOUNDS pp pp pp\n0 5\n0 5\n0 5", "id type element x y z",
+                      "1 7 Si 0 0 0"))
+                            .at(0);
+    FA_CHECK(atoms.numbers() == std::vector<int>({14}));
+    FA_CHECK(atoms.labels() == std::vector<std::string>({"Si"}));
+    FA_CHECK(atoms.int_array("type").data == std::vector<std::int64_t>({7}));
+}
+
+FA_TEST(dump_lone_velocity_component_is_kept) {
+    // vx without vy and vz does not complete a triplet: it stays as its own array.
+    const Atoms atoms = read_lammps_dump(
+        one_atom_dump("ITEM: BOX BOUNDS pp pp pp\n0 5\n0 5\n0 5", "id type element x y z vx",
+                      "1 7 Si 0 0 0 0.5"))
+                            .at(0);
+    FA_CHECK(atoms.has_array("vx"));
+    FA_CHECK_CLOSE(atoms.array("vx").data[0], 0.5, 1e-12);
+    FA_CHECK(!atoms.has_momenta());
+}
+
+FA_TEST(dump_non_element_label_is_its_own_species) {
+    // A type label that is not an element is its own species (dummy X).
+    const Atoms atoms = read_lammps_dump(
+        one_atom_dump("ITEM: BOX BOUNDS pp pp pp\n0 5\n0 5\n0 5", "id type x y z",
+                      "1 Sodium 0 0 0"))
+                            .at(0);
+    FA_CHECK(atoms.labels() == std::vector<std::string>({"Sodium"}));
+    FA_CHECK(atoms.numbers() == std::vector<int>({0}));
+}
+
+FA_TEST(dump_decimals_ignore_german_locale) {
+    // Under de_DE the decimal separator is a comma; a dot must still parse,
+    // for coordinates and for a custom numeric column.
+    const char* saved_locale = std::setlocale(LC_NUMERIC, nullptr);
+    const std::string restore = saved_locale != nullptr ? saved_locale : "C";
+    if (std::setlocale(LC_NUMERIC, "de_DE.UTF-8") == nullptr) {
+        return;  // locale not installed on this machine
+    }
+    const std::string text =
+        dump_head("1") + "ITEM: ATOMS id type x y z c_w\n1 1 1.25 0.5 0.75 0.5\n";
+    const auto frames = read_lammps_dump(text);
+    std::setlocale(LC_NUMERIC, restore.c_str());
+    FA_CHECK_CLOSE(frames[0].position(0).x, 1.25, 1e-12);
+    FA_CHECK(frames[0].has_array("c_w"));
+    FA_CHECK_CLOSE(frames[0].array("c_w").data[0], 0.5, 1e-12);
+}
+
+FA_TEST(data_decimals_ignore_german_locale) {
+    const char* saved_locale = std::setlocale(LC_NUMERIC, nullptr);
+    const std::string restore = saved_locale != nullptr ? saved_locale : "C";
+    if (std::setlocale(LC_NUMERIC, "de_DE.UTF-8") == nullptr) {
+        return;  // locale not installed on this machine
+    }
+    const std::string text =
+        "t\n\n1 atoms\n1 atom types\n\n0 5 xlo xhi\n0 5 ylo yhi\n0 5 zlo zhi\n\n"
+        "Masses\n\n1 55.845 # Fe\n\nAtoms # atomic\n\n1 1 1.25 0.5 0.75\n";
+    const Atoms atoms = read_lammps_data(text);
+    std::setlocale(LC_NUMERIC, restore.c_str());
+    FA_CHECK_CLOSE(atoms.position(0).x, 1.25, 1e-12);
 }
 
 FA_TEST_MAIN()

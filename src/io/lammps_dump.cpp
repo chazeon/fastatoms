@@ -58,6 +58,10 @@ std::optional<FrameBox> read_box(const std::vector<std::string_view>& lines, std
     std::vector<std::vector<std::string_view>> rows;
     std::vector<std::size_t> row_lines;
     for (std::size_t r = 0; r < 3; ++r) {
+        // Blank lines do not count as rows; running out of input is EOF.
+        while (i + 1 < lines.size() && fields(lines[i + 1]).empty()) {
+            ++i;
+        }
         if (i + 1 >= lines.size()) {
             return std::nullopt;
         }
@@ -149,6 +153,8 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
     std::vector<std::vector<std::string_view>> columns;
     std::vector<std::size_t> row_lines;  // 1-based line of each atom row
     bool have_atoms = false;
+    bool have_natoms = false;
+    bool have_box_block = false;
     bool started = false;
     std::size_t item_line = start_line;  // the last ITEM: line, for error messages
 
@@ -191,6 +197,10 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
             timestep = parse_int(fields(lines[i]).front(), i + 1);
             ++i;
         } else if (item == "NUMBER" && f.size() > 2 && f[2] == "OF") {
+            if (have_natoms) {
+                line_error(lineno, "repeated ITEM: NUMBER OF ATOMS in one frame");
+            }
+            have_natoms = true;
             ++i;
             if (!skip_blank()) {
                 return cut();
@@ -201,6 +211,10 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
             }
             ++i;
         } else if (item == "BOX" && f.size() > 2 && f[2] == "BOUNDS") {
+            if (have_box_block) {
+                line_error(lineno, "repeated ITEM: BOX BOUNDS in one frame");
+            }
+            have_box_block = true;
             auto parsed = read_box(lines, i);
             if (!parsed) {
                 return cut();
@@ -211,19 +225,24 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
             if (natoms < 0) {
                 line_error(lineno, "ITEM: ATOMS before NUMBER OF ATOMS");
             }
+            if (have_atoms) {
+                line_error(lineno, "repeated ITEM: ATOMS block in one frame");
+            }
             names.clear();
             for (std::size_t k = 2; k < f.size(); ++k) {
                 names.emplace_back(f[k]);
             }
-            // Every row takes a line, so the count can never exceed the lines left.
-            const auto want = static_cast<std::size_t>(natoms);
-            const std::size_t room = std::min(want, lines.size() - i);
-            columns.assign(names.size(), std::vector<std::string_view>{});
-            for (auto& column : columns) {
-                column.reserve(room);
+            // Every row takes a line, so a count above the lines left cannot
+            // be finished: the input ends inside this frame. Checked as 64-bit
+            // before any narrowing to size_t.
+            if (static_cast<std::uint64_t>(natoms) > lines.size() - (i + 1)) {
+                return cut();
             }
+            const auto want = static_cast<std::size_t>(natoms);
+            // Rows are appended only once validated, so memory follows the
+            // input actually read, never the header's shape alone.
+            columns.assign(names.size(), std::vector<std::string_view>{});
             row_lines.clear();
-            row_lines.reserve(room);
             ++i;
             std::size_t read = 0;
             while (read < want) {
@@ -231,21 +250,23 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
                     return cut();
                 }
                 const auto row = fields(lines[i]);
+                const std::size_t row_line = i + 1;
                 ++i;
                 if (row.empty()) {
                     continue;
                 }
                 if (row.size() != names.size()) {
-                    if (blank_from(lines, i)) {
-                        return cut();  // the last line of the file, cut short
+                    // A short last line is a row cut off by EOF; anything else is malformed.
+                    if (row.size() < names.size() && blank_from(lines, i)) {
+                        return cut();
                     }
-                    line_error(i, "expected " + std::to_string(names.size()) + " columns, got " +
-                                      std::to_string(row.size()));
+                    line_error(row_line, "expected " + std::to_string(names.size()) +
+                                             " columns, got " + std::to_string(row.size()));
                 }
                 for (std::size_t k = 0; k < row.size(); ++k) {
                     columns[k].push_back(row[k]);
                 }
-                row_lines.push_back(i);
+                row_lines.push_back(row_line);
                 ++read;
             }
             have_atoms = true;
@@ -265,6 +286,11 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
     }
 
     const auto n = static_cast<std::size_t>(natoms);
+    for (const auto& column : columns) {
+        if (column.size() != n) {
+            line_error(start_line, "ITEM: ATOMS column length differs from NUMBER OF ATOMS");
+        }
+    }
     const auto column_index = [&names](const std::string& name) -> int {
         const auto it = std::find(names.begin(), names.end(), name);
         return it == names.end() ? -1 : static_cast<int>(it - names.begin());
@@ -357,11 +383,10 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
     }
 
     // Species. 'element' wins; otherwise 'type' holds an integer type or a
-    // label (a label is its own species name).
+    // label (a label is its own species name). The 'type' array is decoded
+    // on its own, so it survives an element column too.
     std::vector<int> numbers(n);
     std::vector<std::string> labels(n);
-    std::vector<std::int64_t> type_ints(n, 0);
-    bool type_numeric = true;
     const int element_col = column_index("element");
     const int type_col = column_index("type");
     if (element_col >= 0) {
@@ -379,21 +404,17 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
             const std::string_view token = col("type")[r];
             std::int64_t t = 0;
             if (try_parse_int(token, t)) {
-                type_ints[k] = t;
-                if (options.types.empty()) {
-                    labels[k] = std::to_string(t);
-                    numbers[k] = kDummyAtomicNumber;
-                } else {
-                    const auto it = options.types.find(static_cast<int>(t));
-                    if (it == options.types.end()) {
-                        line_error(line, "no label for atom type " + std::to_string(t));
-                    }
+                // A type with no label, or not in the map, is the dummy X named by its number.
+                const auto it = options.types.find(static_cast<int>(t));
+                if (it != options.types.end()) {
                     labels[k] = it->second;
                     numbers[k] = element_of_label(it->second, line);
+                } else {
+                    labels[k] = std::to_string(t);
+                    numbers[k] = kDummyAtomicNumber;
                 }
             } else {
                 // A type label such as "Fe1" or "O": the element when it names one.
-                type_numeric = false;
                 labels[k] = std::string(token);
                 const int z = try_number_from_label(token);
                 numbers[k] = z >= 0 ? z : kDummyAtomicNumber;
@@ -402,13 +423,21 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
     } else {
         throw FormatError("LAMMPS dump: needs a 'type' or 'element' column");
     }
+    // The 'type' array holds integers only, and only when every row has one.
+    bool type_numeric = type_col >= 0;
+    std::vector<std::int64_t> type_ints(n, 0);
+    if (type_numeric) {
+        for (std::size_t k = 0; k < n && type_numeric; ++k) {
+            type_numeric = try_parse_int(col("type")[order[k]], type_ints[k]);
+        }
+    }
 
     Atoms atoms(numbers, positions, Cell(box->matrix, box->pbc));
     atoms.set_string_array("labels", labels);
     if (id_col >= 0) {
         atoms.set_int_array("id", ints_of("id"));
     }
-    if (type_col >= 0 && type_numeric) {
+    if (type_numeric) {
         atoms.set_int_array("type", type_ints);
     }
     if (column_index("mol") >= 0) {
@@ -454,23 +483,38 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
         atoms.set_array("forces", force, 3);
     }
 
-    // Every other column becomes an array named after it.
-    static const std::vector<std::string> handled = {
-        "id", "type", "element", "mol", "ix", "iy", "iz", "q", "vx", "vy", "vz", "fx", "fy", "fz",
-        "x", "y", "z", "xs", "ys", "zs", "xu", "yu", "zu", "xsu", "ysu", "zsu"};
+    // Every column not consumed above becomes an array named after it. A
+    // component that does not complete a triplet (a lone vx, say) is kept
+    // on its own.
+    std::vector<std::string> consumed = {"id", "type", "element", "mol", "q"};
+    const auto consume = [&consumed](std::initializer_list<const char*> cols) {
+        consumed.insert(consumed.end(), cols.begin(), cols.end());
+    };
+    if (has_image) {
+        consume({"ix", "iy", "iz"});
+    }
+    if (has_all({"vx", "vy", "vz"})) {
+        consume({"vx", "vy", "vz"});
+    }
+    if (has_all({"fx", "fy", "fz"})) {
+        consume({"fx", "fy", "fz"});
+    }
+    for (const char* base : {"", "s", "u", "su"}) {
+        const std::string names3[3] = {std::string("x") + base, std::string("y") + base,
+                                       std::string("z") + base};
+        if (has_all({names3[0].c_str(), names3[1].c_str(), names3[2].c_str()})) {
+            consumed.insert(consumed.end(), names3, names3 + 3);
+        }
+    }
     for (std::size_t c = 0; c < names.size(); ++c) {
         const std::string& name = names[c];
-        if (std::find(handled.begin(), handled.end(), name) != handled.end()) {
+        if (std::find(consumed.begin(), consumed.end(), name) != consumed.end()) {
             continue;
         }
         bool numeric = true;
         std::vector<double> values(n);
         for (std::size_t k = 0; k < n && numeric; ++k) {
-            const std::string_view token = columns[c][order[k]];
-            const std::string s(token);
-            char* end = nullptr;
-            values[k] = std::strtod(s.c_str(), &end);
-            numeric = !s.empty() && end == s.c_str() + s.size();
+            numeric = try_parse_double(columns[c][order[k]], values[k]);
         }
         if (numeric) {
             atoms.set_array(name, values, 1);

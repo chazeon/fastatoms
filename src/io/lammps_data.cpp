@@ -93,7 +93,8 @@ struct AtomRecord {
 struct MassRecord {
     std::size_t line{0};
     double mass{0.0};
-    std::string comment_label{};  ///< first word after '#', if any
+    std::string comment_label{};    ///< first word after '#', if any
+    std::string comment_element{};  ///< second word after '#', if any (the writer's element)
 };
 
 struct TypeInfo {
@@ -103,13 +104,25 @@ struct TypeInfo {
 
 enum class Section { Header, Atoms, Masses, Velocities, TypeLabels, Other };
 
+/// The type that the file cannot resolve: the dummy element X, labelled by
+/// its number.
+TypeInfo unresolved_type(std::int64_t type) {
+    return {std::to_string(type), kDummyAtomicNumber};
+}
+
 /// Label and element of one LAMMPS atom type. Priority: explicit `types`, then
-/// the Atom Type Labels section, then the Masses comment, then the mass.
+/// the Atom Type Labels section, then the Masses comment, then the mass. A
+/// type that none of these resolve becomes the dummy X labelled by its number.
 ///
 /// A Masses comment is used only when its element has a matching mass, so
-/// `12.011 # Ca` reads as carbon. A label that names no element (`Sodium`)
-/// falls through to the mass match, and the label then becomes the matched
-/// symbol.
+/// `12.011 # Ca` reads as carbon. The writer may append the element as a
+/// second word (`# C14 C`, for an isotope whose mass is far from the
+/// tabulated weight); that element is taken as written when it agrees with
+/// the label. A comment that names an element whose mass disagrees with the
+/// stated mass, and no element matches the mass either, is an error: the
+/// file is inconsistent, not merely unknown. A label that names no element
+/// (`Sodium`) falls through to the mass match, and the label then becomes the
+/// matched symbol.
 TypeInfo resolve_type(std::int64_t type, std::size_t line, const LammpsTypeMap& types,
                       const std::map<std::int64_t, std::string>& type_labels,
                       const std::map<std::int64_t, MassRecord>& masses) {
@@ -128,32 +141,37 @@ TypeInfo resolve_type(std::int64_t type, std::size_t line, const LammpsTypeMap& 
         if (zm >= 0) {
             return {it->second, zm};
         }
-        line_error(line, "atom type label '" + it->second +
-                             "' names no element; give 'types' explicitly or a Masses entry");
+        return unresolved_type(type);
     }
 
-    if (mass != nullptr) {
-        int zc = -1;
-        if (!mass->comment_label.empty()) {
-            zc = try_number_from_label(mass->comment_label);
-            if (zc >= 0 && mass_agrees(zc, mass->mass)) {
-                return {mass->comment_label, zc};
-            }
-        }
-        const int zm = element_from_mass(mass->mass);
-        if (zm >= 0) {
-            return {std::string(symbol_from_number(zm)), zm};
-        }
-        if (zc >= 0) {
-            // No element has this mass; the comment is the only evidence left.
-            return {mass->comment_label, zc};
-        }
-        line_error(line, "no element has a mass near " + format_double(mass->mass) +
-                             " for atom type " + std::to_string(type) +
-                             "; give 'types' explicitly");
+    if (mass == nullptr) {
+        return unresolved_type(type);
     }
-    line_error(line, "no element for atom type " + std::to_string(type) +
-                         " (no 'types' entry and no Masses section)");
+    const std::string& word = mass->comment_label;
+    const int zl = word.empty() ? -1 : try_number_from_label(word);
+    if (zl >= 0 && !mass->comment_element.empty()) {
+        const int ze = try_number_from_label(mass->comment_element);
+        if (ze >= 0 && ze != zl) {
+            line_error(line, "Masses comment names '" + word + "' and element '" +
+                                 mass->comment_element + "', which disagree");
+        }
+        if (ze >= 0) {
+            return {word, ze};
+        }
+    }
+    if (zl >= 0 && mass_agrees(zl, mass->mass)) {
+        return {word, zl};
+    }
+    const int zm = element_from_mass(mass->mass);
+    if (zm >= 0) {
+        return {std::string(symbol_from_number(zm)), zm};
+    }
+    if (zl >= 0) {
+        line_error(line, "Masses comment names element '" + word + "' but no element has a mass " +
+                             "near " + format_double(mass->mass) + " (atom type " +
+                             std::to_string(type) + "); give 'types' explicitly");
+    }
+    return unresolved_type(type);
 }
 
 }  // namespace
@@ -324,6 +342,9 @@ Atoms read_lammps_data(std::string_view text, const LammpsDataReadOptions& optio
             const auto words = fields(comment_of(raw));
             if (!words.empty()) {
                 record.comment_label = std::string(words.front());
+            }
+            if (words.size() >= 2) {
+                record.comment_element = std::string(words[1]);
             }
             std::int64_t t = 0;
             if (try_parse_int(f[0], t)) {
@@ -635,25 +656,31 @@ std::string write_lammps_data(const Atoms& atoms, const LammpsDataWriteOptions& 
 
     if (options.masses) {
         // One mass per type: that of the first atom of the type, else the
-        // weight of the element the label names. The comment is the label.
+        // weight of the element the label names. The comment is the label,
+        // followed by the atoms' element when the label alone would not give
+        // it back on reading ("# C14 C": carbon-14 has a mass far from
+        // carbon's tabulated weight). The reader takes that second word as
+        // written, provided it agrees with the label.
         std::vector<std::size_t> first(species.size(), n);
         for (std::size_t i = 0; i < n; ++i) {
             first[types[i] - 1] = std::min(first[types[i] - 1], i);
         }
         out += "\nMasses\n\n";
         for (std::size_t k = 0; k < species.size(); ++k) {
-            if (first[k] < n) {
-                line(std::to_string(k + 1) + " " + format_double(atoms.mass(first[k])) + " # " +
-                     species[k]);
-                continue;
-            }
-            if (species[k].empty()) {
+            if (species[k].empty() && first[k] >= n) {
                 line(std::to_string(k + 1) + " 1.0 # unused type");
                 continue;
             }
-            const int z = try_number_from_label(species[k]);
-            const double mass = z >= 0 ? atomic_mass(z) : 1.0;
-            line(std::to_string(k + 1) + " " + format_double(mass) + " # " + species[k]);
+            const int label_z = try_number_from_label(species[k]);
+            const bool used = first[k] < n;
+            const int z = used ? atoms.number(first[k]) : label_z;
+            const double mass = used ? atoms.mass(first[k])
+                                     : (label_z >= 0 ? atomic_mass(label_z) : 1.0);
+            std::string comment = species[k];
+            if (z > kDummyAtomicNumber && !(label_z == z && mass_agrees(z, mass))) {
+                comment += " " + std::string(symbol_from_number(z));
+            }
+            line(std::to_string(k + 1) + " " + format_double(mass) + " # " + comment);
         }
     }
 

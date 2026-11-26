@@ -761,6 +761,30 @@ FA_TEST(writer_comment_sources) {
     FA_CHECK(fastatoms::io::write_poscar(b).find(b.formula() + "\n1.0\n") == 0);
 }
 
+// With vasp5=false the comment line is the species line, and the reader takes
+// every comment token as a species. So a custom comment cannot be written.
+FA_TEST(writer_vasp4_comment_must_be_the_species_line) {
+    Atoms a(std::vector<int>{26, 8}, std::vector<double>{0, 0, 0, 1, 1, 1}, Cell::cubic(10.0));
+    PoscarWriteOptions v4;
+    v4.vasp5 = false;
+
+    v4.comment = "my structure";
+    const std::string message = format_error([&] { (void)fastatoms::io::write_poscar(a, v4); });
+    FA_CHECK(message.find("vasp5=true") != std::string::npos);
+
+    // The species themselves are an acceptable comment, and read back.
+    v4.comment = "Fe O";
+    const std::string text = fastatoms::io::write_poscar(a, v4);
+    FA_CHECK(text.rfind("Fe O\n", 0) == 0);
+    FA_CHECK((fastatoms::io::read_poscar(text).numbers() == std::vector<int>{26, 8}));
+
+    // Without a comment option the species line is written, not info["comment"].
+    a.info()[std::string("comment")] = fastatoms::Value(std::string("from info"));
+    PoscarWriteOptions no_comment;
+    no_comment.vasp5 = false;
+    FA_CHECK(fastatoms::io::write_poscar(a, no_comment).rfind("Fe O\n", 0) == 0);
+}
+
 // Byte-order mark, lowercase mode words.
 FA_TEST(leading_utf8_bom_is_ignored) {
     const std::string text = "\xEF\xBB\xBF"
@@ -953,6 +977,73 @@ Direct configuration=     2
         variable.substr(0, variable.rfind("Fe O XDATCAR variable cell") + 40));
     FA_CHECK(cut_header.size() == 1);
     FA_CHECK(cut_header[0].info().find("truncated") != nullptr);
+}
+
+// Cartesian frames are Cartesian times the scale, as in POSCAR. Direct frames
+// are fractional, on the scaled lattice.
+FA_TEST(xdatcar_cartesian_configuration_is_not_fractional) {
+    const std::string text = R"(cart frames
+2.0
+3 0 0
+0 3 0
+0 0 3
+Fe O
+1 1
+Cartesian configuration=     1
+0.25 0 0
+0.5 0.5 0.5
+Direct configuration=     2
+0.25 0 0
+0.5 0.5 0.5
+)";
+    const auto frames = fastatoms::io::read_xdatcar(text);
+    FA_CHECK(frames.size() == 2);
+    FA_CHECK_CLOSE(frames[0].position(0).x, 0.5, 1e-12);
+    FA_CHECK_CLOSE(frames[0].position(1).x, 1.0, 1e-12);
+    FA_CHECK_CLOSE(frames[1].position(0).x, 1.5, 1e-12);
+    FA_CHECK_CLOSE(frames[1].position(1).x, 3.0, 1e-12);
+    FA_CHECK_CLOSE(frames[0].cell().vector(0).x, 6.0, 1e-12);
+}
+
+// Atom counts are checked against the lines left before anything is allocated.
+// A count that wraps when multiplied by 3 (6148914691236517206 * 3 == 2 mod 2^64),
+// a count past the int64 range, a sum that exceeds the file and a single count
+// that exceeds it are all FormatErrors naming the counts line (line 7).
+FA_TEST(poscar_atom_counts_are_checked_before_allocation) {
+    const auto poscar = [](const std::string& counts) {
+        return std::string(R"(huge counts
+1.0
+  3.0 0.0 0.0
+  0.0 3.0 0.0
+  0.0 0.0 3.0
+Fe O
+)") + counts + "\nDirect\n0.0 0.0 0.0\n";
+    };
+    // Only one coordinate line follows, so "2 2" (sum 4) and "2 1" (sum 3) do not fit.
+    for (const char* counts : {"6148914691236517206", "9223372036854775807 9223372036854775807",
+                               "18446744073709551615", "3 0", "2 2", "2 1"}) {
+        const std::string message =
+            format_error([&] { (void)fastatoms::io::read_poscar(poscar(counts)); });
+        FA_CHECK(message.find("line 7") != std::string::npos);
+    }
+    // Counts that fit the lines left are accepted.
+    FA_CHECK(fastatoms::io::read_poscar(poscar("1 1") + "0.5 0.5 0.5\n").size() == 2);
+}
+
+// The same checks on the XDATCAR header, which is parsed the same way.
+FA_TEST(xdatcar_atom_counts_are_checked_before_allocation) {
+    const std::string text = R"(huge counts
+1.0
+  3.0 0.0 0.0
+  0.0 3.0 0.0
+  0.0 0.0 3.0
+Fe O
+6148914691236517206 1
+Direct configuration=     1
+0.0 0.0 0.0
+)";
+    const std::string message = format_error([&] { (void)fastatoms::io::read_xdatcar(text); });
+    FA_CHECK(message.find("line 7") != std::string::npos);
 }
 
 FA_TEST_MAIN()

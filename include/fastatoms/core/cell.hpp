@@ -79,8 +79,23 @@ public:
     /// True if the cell matrix is exactly zero (an isolated molecule).
     [[nodiscard]] bool is_zero() const noexcept { return matrix_.is_zero(); }
 
-    /// True if the cell is invertible, i.e. spans three dimensions.
+    /// True if the *raw* lattice matrix is invertible, i.e. the three rows span
+    /// three dimensions. A cell with a zero row (rank-deficient, periodic only
+    /// in the directions it spans) reports false here even though it has
+    /// scaled coordinates; see `has_scaled_coordinates()`.
     [[nodiscard]] bool is_invertible() const noexcept { return !singular_; }
+
+    /// True if fractional coordinates are defined for this cell. That holds
+    /// when the matrix is invertible, and also when it has one or two zero rows
+    /// that can be completed with orthonormal vectors exactly as ASE's
+    /// `complete_cell` does. A zero cell (all rows zero) and a cell with
+    /// linearly dependent nonzero rows have no fractional coordinates.
+    [[nodiscard]] bool has_scaled_coordinates() const noexcept { return scaled_ok_; }
+
+    /// The lattice matrix with zero rows completed (see
+    /// `has_scaled_coordinates()`). Equal to `matrix()` when the matrix is
+    /// invertible.
+    [[nodiscard]] const Mat3& completed_matrix() const noexcept { return completed_; }
 
     /// Signed cell volume; `volume()` returns its absolute value.
     [[nodiscard]] double signed_volume() const noexcept { return determinant_; }
@@ -112,14 +127,15 @@ public:
     /// \name Coordinate transformations
     /// @{
 
-    /// Cartesian -> fractional. Returns the input unchanged for a singular cell.
+    /// Cartesian -> fractional, against `completed_matrix()`. Returns the input
+    /// unchanged when there is no fractional basis (`!has_scaled_coordinates()`).
     [[nodiscard]] FASTATOMS_ALWAYS_INLINE Vec3 scaled(const Vec3& cartesian) const noexcept {
-        return singular_ ? cartesian : cartesian * inverse_;
+        return scaled_ok_ ? cartesian * completed_inverse_ : cartesian;
     }
 
-    /// Fractional -> Cartesian.
+    /// Fractional -> Cartesian, against `completed_matrix()`.
     [[nodiscard]] FASTATOMS_ALWAYS_INLINE Vec3 cartesian(const Vec3& scaled) const noexcept {
-        return scaled * matrix_;
+        return scaled * completed_;
     }
 
     /// Fold a fractional coordinate into [0, 1) along every periodic direction.
@@ -139,7 +155,7 @@ public:
 
     /// Fold a Cartesian position into the cell.
     [[nodiscard]] Vec3 wrap(const Vec3& position, double eps = 1e-7) const noexcept {
-        if (!any_pbc() || singular_) {
+        if (!any_pbc() || !scaled_ok_) {
             return position;
         }
         return cartesian(wrap_scaled(scaled(position), eps));
@@ -148,19 +164,25 @@ public:
 
     /// Shortest periodic image of the displacement vector `dr`.
     ///
-    /// The fractional coordinates are rounded to the nearest image and the 27
-    /// surrounding images are then checked explicitly, which makes the result
-    /// exact for any reasonably reduced triclinic cell rather than only for
-    /// near-orthogonal ones.
+    /// Only the periodic directions are shifted: the periodic fractional
+    /// coordinates are rounded to the nearest image and the surrounding images
+    /// are then checked explicitly, which makes the result exact for any
+    /// reduced triclinic cell. A non-periodic lattice direction (for example a
+    /// zero row completed by `completed_matrix()`) is never shifted. Returns
+    /// `dr` unchanged when there is no periodic direction or no fractional basis.
     [[nodiscard]] Vec3 minimum_image(const Vec3& dr) const noexcept;
 
     /// Minimum-image displacement together with the integer cell offset that
-    /// produced it.
-    Vec3 minimum_image(const Vec3& dr, std::array<int, 3>& offset) const noexcept;
+    /// produced it, so that `dr - cartesian(offset)` equals the result.
+    ///
+    /// \throws std::overflow_error if an offset component does not fit in `int`
+    ///         (the displacement itself is then not representable as an offset).
+    Vec3 minimum_image(const Vec3& dr, std::array<int, 3>& offset) const;
 
     /// Largest cutoff for which `minimum_image` is guaranteed unique, i.e.
     /// half the smallest perpendicular width over the periodic directions.
-    /// Returns infinity when nothing is periodic.
+    /// Returns infinity when nothing is periodic and zero when there is no
+    /// fractional basis.
     [[nodiscard]] double maximum_unique_cutoff() const noexcept;
 
     /// Human-readable one-line summary, used by the Python `repr`.
@@ -168,12 +190,19 @@ public:
 
 private:
     void refresh() noexcept;
+    /// Minimum image of `dr`; `shift` receives the (integer-valued) lattice
+    /// shift in each periodic direction, kept as doubles so that it cannot
+    /// overflow while it is computed.
+    Vec3 minimum_image_search(const Vec3& dr, std::array<double, 3>& shift) const noexcept;
 
     Mat3 matrix_{};
-    Mat3 inverse_{};
+    Mat3 inverse_{};            ///< Inverse of `matrix_`; zero when singular.
+    Mat3 completed_{};          ///< `matrix_` with zero rows completed.
+    Mat3 completed_inverse_{};  ///< Inverse of `completed_`; zero when unavailable.
     std::array<bool, 3> pbc_{{false, false, false}};
     double determinant_{0.0};
-    bool singular_{true};
+    bool singular_{true};       ///< `matrix_` is singular.
+    bool scaled_ok_{false};     ///< `completed_` is invertible.
 };
 
 }  // namespace fastatoms

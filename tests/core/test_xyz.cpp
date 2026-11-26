@@ -406,8 +406,7 @@ FA_TEST(malformed_input_throws_format_error) {
     FA_CHECK_THROWS(read_xyz("1\nc\nQq 0 0 0\n"), FormatError);
     FA_CHECK_THROWS(read_xyz("1\nProperties=species:S:1:pos:R\nH 0 0 0\n"), FormatError);
     FA_CHECK_THROWS(read_xyz("1\nProperties=species:S:2:pos:R:3\nH 0 0 0\n"), FormatError);
-    FA_CHECK_THROWS(read_xyz("1\nProperties=species:S:1:pos:R:3:x:S:2\nH 0 0 0 a b\n"),
-                    FormatError);
+    FA_CHECK_THROWS(read_xyz("1\nProperties=species:S:1:pos:R:3:x:S:2\nH 0 0 0 a\n"), FormatError);
     FA_CHECK_THROWS(read_xyz("1\nc\nH 0 0 nan_text\n"), FormatError);
 }
 
@@ -536,6 +535,162 @@ FA_TEST(writer_rejects_line_breaks_in_info) {
         }
         FA_CHECK(message.find("'note'") != std::string::npos);
     }
+}
+
+FA_TEST(extxyz_property_widths_cannot_wrap) {
+    // 4294 columns of 1000000 plus one of 967296, with species and pos, total
+    // 4294967300 = 4 (mod 2^32). A 32-bit width sum would accept a 4-token line.
+    std::string spec = "species:S:1:pos:R:3";
+    for (int i = 0; i < 4294; ++i) {
+        spec += ":c" + std::to_string(i) + ":R:1000000";
+    }
+    spec += ":last:R:967296";
+    FA_CHECK_THROWS(read_xyz("1\nProperties=" + spec + "\nH 0 0 0\n"), FormatError);
+    FA_CHECK(error_of("1\nProperties=" + spec + "\nH 0 0 0\n").find("per atom") !=
+             std::string::npos);
+
+    // A line of the declared length is still what the reader needs; a short one is rejected.
+    FA_CHECK_THROWS(read_xyz("1\nProperties=species:S:1:pos:R:3:x:R:5\nH 0 0 0 1 2\n"),
+                    FormatError);
+    const Atoms ok = read_xyz("1\nProperties=species:S:1:pos:R:3:x:R:2\nH 0 0 0 1 2\n").front();
+    FA_CHECK(ok.array("x").ncols == 2);
+}
+
+FA_TEST(atom_count_beyond_the_text_is_rejected) {
+    // 2^32 + 1 atoms with one row: the count must not narrow to one atom.
+    FA_CHECK_THROWS(read_xyz("4294967297\nc\nH 0 0 0\n"), FormatError);
+    FA_CHECK_THROWS(read_xyz("18446744073709551615\nc\nH 0 0 0\n"), FormatError);
+    FA_CHECK(error_of("3\nc\nH 0 0 0\n").find("line 1") != std::string::npos);
+    FA_CHECK(read_xyz("1\nc\nH 0 0 0\n").front().size() == 1);
+    FA_CHECK(read_xyz("0\nc\n").front().size() == 0);
+}
+
+FA_TEST(precision_is_limited_to_17_digits) {
+    Atoms atoms(std::vector<int>{6}, std::vector<double>{1e-100, 0.0, 0.0});
+    XyzWriteOptions too_many;
+    too_many.precision = 100;
+    FA_CHECK_THROWS(write_xyz(atoms, too_many), FormatError);
+    FA_CHECK_THROWS(write_xyz(std::vector<Atoms>{atoms}, too_many), FormatError);
+    XyzWriteOptions negative;
+    negative.precision = -1;
+    FA_CHECK_THROWS(write_xyz(atoms, negative), FormatError);
+
+    // 17 digits keeps a tiny coordinate; it is never printed as zero.
+    XyzWriteOptions full;
+    full.precision = 17;
+    const std::string text = write_xyz(atoms, full);
+    FA_CHECK(text.find("\nC 1e-100 0 0\n") != std::string::npos);
+    FA_CHECK(read_xyz(text).front().position(0).x == 1e-100);
+}
+
+FA_TEST(string_info_that_reads_as_a_number_round_trips_as_a_string) {
+    Atoms atoms({1}, {0.0, 0.0, 0.0});
+    atoms.set_info(Value(Value::Map{
+        {"leading_zero", Value("00123")},
+        {"flag_word", Value("T")},
+        {"exponent", Value("1e5")},
+        {"two_numbers", Value("1 2")},
+        {"json_prefix", Value("_JSON 3")},
+        {"plain", Value("hello world")},
+        {"empty", Value("")},
+        {"uid", Value("00123")},
+        {"singleton", Value(Value::List{Value(7)})},
+        {"singleton_flag", Value(Value::List{Value(true)})},
+        {"pair", Value(Value::List{Value(1), Value(2)})},
+    }));
+    const std::string text = write_xyz(atoms);
+    // The writer's own output must not retype anything.
+    FA_CHECK(text.find("leading_zero=\"_JSON \\\"00123\\\"\"") != std::string::npos);
+    FA_CHECK(text.find("flag_word=\"_JSON \\\"T\\\"\"") != std::string::npos);
+    FA_CHECK(text.find("singleton=\"_JSON [7]\"") != std::string::npos);
+    FA_CHECK(text.find("pair=\"1 2\"") != std::string::npos);
+    FA_CHECK(text.find("plain=\"hello world\"") != std::string::npos);
+
+    const Atoms back = read_xyz(text).front();
+    const Value& info = back.info();
+    FA_CHECK(info["leading_zero"].is_string() && info["leading_zero"].as_string() == "00123");
+    FA_CHECK(info["flag_word"].is_string() && info["flag_word"].as_string() == "T");
+    FA_CHECK(info["exponent"].is_string() && info["exponent"].as_string() == "1e5");
+    FA_CHECK(info["two_numbers"].is_string() && info["two_numbers"].as_string() == "1 2");
+    FA_CHECK(info["json_prefix"].is_string() && info["json_prefix"].as_string() == "_JSON 3");
+    FA_CHECK(info["plain"].is_string() && info["plain"].as_string() == "hello world");
+    FA_CHECK(info["empty"].is_string() && info["empty"].as_string().empty());
+    FA_CHECK(info["uid"].is_string() && info["uid"].as_string() == "00123");
+    FA_CHECK(info["singleton"].is_list() && info["singleton"].size() == 1);
+    FA_CHECK(info["singleton"].at(0).is_int() && info["singleton"].at(0).as_int() == 7);
+    FA_CHECK(info["singleton_flag"].is_list() && info["singleton_flag"].at(0).is_bool());
+    FA_CHECK(info["pair"].is_list() && info["pair"].size() == 2);
+    FA_CHECK(info["pair"].at(1).is_int() && info["pair"].at(1).as_int() == 2);
+    // The second trip is byte-identical.
+    FA_CHECK(write_xyz(back) == text);
+}
+
+FA_TEST(plain_xyz_keeps_its_comment_verbatim) {
+    Atoms atoms({8, 1}, {0.0, 0.0, 0.0, 0.0, 0.0, 0.96});
+    atoms.set_info(Value(Value::Map{{"comment", Value("step=1 Lattice=\"5 0 0 0 5 0 0 0 5\"")}}));
+    XyzWriteOptions plain;
+    plain.extended = false;
+    const std::string text = write_xyz(atoms, plain);
+    FA_CHECK(text.rfind("2\nstep=1 Lattice=\"5 0 0 0 5 0 0 0 5\"\n", 0) == 0);
+
+    XyzReadOptions as_plain;
+    as_plain.extended = false;
+    const Atoms back = read_xyz(text, as_plain).front();
+    FA_CHECK(back.info()["comment"].as_string() == "step=1 Lattice=\"5 0 0 0 5 0 0 0 5\"");
+    FA_CHECK(back.info().find("step") == nullptr);
+    FA_CHECK(back.cell().is_zero());
+    FA_CHECK(!back.pbc()[0] && !back.pbc()[1] && !back.pbc()[2]);
+    FA_CHECK(back.numbers() == atoms.numbers());
+
+    // The default reader is extended, so the same text is parsed as key=value.
+    const Atoms parsed = read_xyz(text).front();
+    FA_CHECK(parsed.info().find("step") != nullptr);
+    FA_CHECK(!parsed.cell().is_zero());
+}
+
+FA_TEST(species_with_z_takes_numbers_from_z) {
+    const Atoms atoms =
+        read_xyz("2\nProperties=species:S:1:Z:I:1:pos:R:3\nH 1 0 0 0\nFe1 26 1 1 1\n").front();
+    FA_CHECK(atoms.numbers() == (std::vector<int>{1, 26}));
+    FA_CHECK(atoms.labels() == (std::vector<std::string>{"H", "Fe1"}));
+
+    // Z may come first and may disagree with the label's element: Z wins.
+    const Atoms swapped =
+        read_xyz("1\nProperties=Z:I:1:species:S:1:pos:R:3\n6 Si 0 0 0\n").front();
+    FA_CHECK(swapped.numbers() == (std::vector<int>{6}));
+    FA_CHECK(swapped.labels() == (std::vector<std::string>{"Si"}));
+
+    const std::string text = write_xyz(atoms);
+    const Atoms back = read_xyz(text).front();
+    FA_CHECK(back.numbers() == atoms.numbers());
+    FA_CHECK(back.labels() == atoms.labels());
+    FA_CHECK_THROWS(read_xyz("1\nProperties=species:S:1:Z:I:1:Z:I:1:pos:R:3\nH 1 1 0 0 0\n"),
+                    FormatError);
+}
+
+FA_TEST(multi_token_string_columns_round_trip) {
+    const std::string text =
+        "2\nProperties=species:S:1:pos:R:3:words:S:2 pbc=\"F F F\"\n"
+        "H 0 0 0 foo bar\n"
+        "O 1 0 0 baz qux\n";
+    const Atoms atoms = read_xyz(text).front();
+    FA_CHECK(atoms.string_array("words") == (std::vector<std::string>{"foo bar", "baz qux"}));
+    FA_CHECK(atoms.labels() == (std::vector<std::string>{"H", "O"}));
+
+    const std::string written = write_xyz(atoms);
+    FA_CHECK(written.find("Properties=species:S:1:pos:R:3:words:S:2") != std::string::npos);
+    FA_CHECK(written.find("\nH 0 0 0 foo bar\n") != std::string::npos);
+    FA_CHECK(written.find("_string_widths") == std::string::npos);
+    FA_CHECK(write_xyz(read_xyz(written).front()) == written);
+
+    // A value that is not the recorded number of tokens cannot be written.
+    Atoms broken = atoms;
+    broken.set_string_array("words", {"one", "baz qux"});
+    FA_CHECK_THROWS(write_xyz(broken), FormatError);
+
+    // Fewer tokens than the declared width is a malformed line.
+    FA_CHECK_THROWS(read_xyz("1\nProperties=species:S:1:pos:R:3:words:S:2\nH 0 0 0 foo\n"),
+                    FormatError);
 }
 
 FA_TEST_MAIN()

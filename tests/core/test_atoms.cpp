@@ -2,6 +2,9 @@
 #include "fastatoms/core/atoms.hpp"
 #include "testing.hpp"
 
+#include <limits>
+#include <stdexcept>
+
 using namespace fastatoms;
 
 namespace {
@@ -81,6 +84,108 @@ FA_TEST(right_angles_are_exact) {
     FA_CHECK(m.row(1).x == 0.0 && m.row(2).x == 0.0 && m.row(2).y == 0.0);
     const Cell hex = Cell::from_parameters(3, 3, 15, 90, 90, 120);
     FA_CHECK(hex.matrix().row(2).x == 0.0 && hex.matrix().row(2).y == 0.0);
+}
+
+FA_TEST(array_shape_overflow_is_rejected) {
+    Atoms atoms(std::vector<int>{1, 1}, {0.0, 0.0, 0.0, 1.0, 1.0, 1.0});
+    // 2 * (SIZE_MAX / 2 + 1) wraps to 0, which would match empty data.
+    const std::size_t huge = std::numeric_limits<std::size_t>::max() / 2 + 1;
+    FA_CHECK_THROWS(atoms.set_array("big", {}, huge), std::length_error);
+    FA_CHECK_THROWS(atoms.set_int_array("big", {}, huge), std::length_error);
+    FA_CHECK(!atoms.has_array("big"));
+    FA_CHECK(!atoms.has_int_array("big"));
+}
+
+FA_TEST(to_string_handles_huge_cell) {
+    const Atoms atoms(std::vector<int>{1}, {0.0, 0.0, 0.0}, Cell::cubic(1e40));
+    const std::string text = atoms.to_string();
+    // The %.4f rendering of 1e40 is far longer than the old 96-byte buffer.
+    FA_CHECK(text.size() > 96);
+    FA_CHECK(text.find("cell=[1000000000") != std::string::npos);
+    FA_CHECK(text.find("pbc=[True, True, True])") != std::string::npos);
+    const std::string cell_text = Cell::cubic(1e40).to_string();
+    FA_CHECK(cell_text.find("1e+40") != std::string::npos);
+}
+
+FA_TEST(minimum_image_is_defined_for_large_coordinates) {
+    const Cell unit = Cell::cubic(1.0);
+    // 2^31 + 0.25 used to be cast to int before the image search.
+    std::array<int, 3> offset{};
+    const Vec3 image = unit.minimum_image(Vec3{2147483648.25, 0.0, 0.0}, offset);
+    FA_CHECK_CLOSE(image.x, 0.25, 1e-6);
+    FA_CHECK_CLOSE(image.y, 0.0, 1e-12);
+    FA_CHECK(offset[0] == std::numeric_limits<int>::min());  // representable: -2^31
+    FA_CHECK(offset[1] == 0 && offset[2] == 0);
+    FA_CHECK_CLOSE(unit.minimum_image(Vec3{2147483648.25, 0.0, 0.0}).x, 0.25, 1e-6);
+
+    // -2^32 is not representable as an int offset.
+    FA_CHECK_THROWS(unit.minimum_image(Vec3{4294967296.0, 0.0, 0.0}, offset), std::overflow_error);
+}
+
+FA_TEST(value_as_int_rejects_out_of_range_floats) {
+    FA_CHECK_THROWS(Value(1e30).as_int(), InputError);
+    FA_CHECK_THROWS(Value(9223372036854775808.0).as_int(), InputError);  // 2^63
+    FA_CHECK(Value(-9223372036854775808.0).as_int() == std::numeric_limits<std::int64_t>::min());
+    FA_CHECK(Value(4096.0).as_int() == 4096);
+    FA_CHECK_THROWS(Value(1.5).as_int(), InputError);
+}
+
+FA_TEST(rank_deficient_cell_uses_completed_basis_like_ase) {
+    // ASE: complete_cell adds (0,0,1); scaled_positions((1,1.5,4)) == (0.5,0.5,4).
+    const Mat3 matrix = Mat3::from_rows({2.0, 0.0, 0.0}, {0.0, 3.0, 0.0}, {0.0, 0.0, 0.0});
+    const Cell cell(matrix, {true, true, false});
+    FA_CHECK(!cell.is_invertible());  // the raw matrix is singular
+    FA_CHECK(cell.has_scaled_coordinates());
+
+    Atoms atoms(std::vector<int>{1}, {1.0, 1.5, 4.0}, cell);
+    const std::vector<double> s = atoms.scaled_positions();
+    FA_CHECK_CLOSE(s[0], 0.5, 1e-12);
+    FA_CHECK_CLOSE(s[1], 0.5, 1e-12);
+    FA_CHECK_CLOSE(s[2], 4.0, 1e-12);
+
+    atoms.set_scaled_positions({0.25, 0.5, 1.0});
+    FA_CHECK_CLOSE(atoms.position(0).x, 0.5, 1e-12);
+    FA_CHECK_CLOSE(atoms.position(0).y, 1.5, 1e-12);
+    FA_CHECK_CLOSE(atoms.position(0).z, 1.0, 1e-12);
+
+    // Wrapping folds only the periodic fractional coordinates: x 5 -> 1.
+    atoms.set_position(0, Vec3{5.0, 1.5, 4.0});
+    atoms.wrap();
+    FA_CHECK_CLOSE(atoms.position(0).x, 1.0, 1e-12);
+    FA_CHECK_CLOSE(atoms.position(0).z, 4.0, 1e-12);
+
+    // Minimum image uses only the periodic sublattice: 1.8 -> -0.2 along x,
+    // while the non-periodic z displacement is kept.
+    const Vec3 mic = cell.minimum_image(Vec3{1.8, 0.0, 7.0});
+    FA_CHECK_CLOSE(mic.x, -0.2, 1e-12);
+    FA_CHECK_CLOSE(mic.z, 7.0, 1e-12);
+}
+
+FA_TEST(cells_without_a_fractional_basis_are_reported) {
+    const Mat3 zero{};
+    FA_CHECK(!Cell(zero, {true, true, true}).has_scaled_coordinates());
+    const Mat3 dependent = Mat3::from_rows({1.0, 0.0, 0.0}, {2.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
+    const Cell cell(dependent, {true, true, true});
+    FA_CHECK(!cell.has_scaled_coordinates());
+    const Atoms atoms(std::vector<int>{1}, {0.0, 0.0, 0.0}, cell);
+    FA_CHECK_THROWS(atoms.scaled_positions(), std::invalid_argument);
+}
+
+FA_TEST(extend_rejects_width_mismatch_before_mutating) {
+    Atoms left(std::vector<int>{1, 1}, {0.0, 0.0, 0.0, 1.0, 1.0, 1.0});
+    left.set_array("foo", {1.0, 2.0}, 1);
+    left.set_int_array("bar", {3, 4}, 1);
+    Atoms right(std::vector<int>{6}, {0.0, 0.0, 0.0});
+    right.set_array("foo", {5.0, 6.0}, 2);
+    FA_CHECK_THROWS(left.extend(right), std::invalid_argument);
+    FA_CHECK(left.size() == 2);
+    FA_CHECK(left.array("foo").ncols == 1 && left.array("foo").data.size() == 2);
+    FA_CHECK(left.array("foo").data[1] == 2.0);
+
+    right.remove_array("foo");
+    right.set_int_array("bar", {7, 8}, 2);
+    FA_CHECK_THROWS(left.extend(right), std::invalid_argument);
+    FA_CHECK(left.size() == 2 && left.int_array("bar").data.size() == 2);
 }
 
 FA_TEST_MAIN()
