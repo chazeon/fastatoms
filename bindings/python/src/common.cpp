@@ -48,10 +48,17 @@ Value value_from_py_nested(const py::handle& obj, std::vector<const PyObject*>& 
         if (is_dict) {
             Value::Map items;
             for (auto kv : py::reinterpret_borrow<py::dict>(obj)) {
-                if (!py::isinstance<py::str>(kv.first)) {
-                    throw py::type_error("fastatoms values need string keys");
+                // Integer keys (a LAMMPS types={1: "Fe"} map) become their decimal
+                // text, as JSON would write them; bool is excluded, it is an int.
+                std::string key;
+                if (py::isinstance<py::str>(kv.first)) {
+                    key = kv.first.cast<std::string>();
+                } else if (py::isinstance<py::int_>(kv.first) && !py::isinstance<py::bool_>(kv.first)) {
+                    key = py::str(kv.first).cast<std::string>();
+                } else {
+                    throw py::type_error("fastatoms values need string or integer keys");
                 }
-                items.emplace_back(kv.first.cast<std::string>(), value_from_py_nested(kv.second, path));
+                items.emplace_back(std::move(key), value_from_py_nested(kv.second, path));
             }
             result = Value(std::move(items));
         } else {

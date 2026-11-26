@@ -426,3 +426,23 @@ def test_gemmy_extxyz_frames_match_ase(tmp_path: Path) -> None:
     assert len(ours) == len(theirs)
     for mine, ref in zip(ours, theirs, strict=False):
         assert_same_structure(mine, ref, pos_atol=1e-5)
+
+
+_DUMP_TWO_TYPES = (
+    "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS pp pp pp\n0 4\n0 4\n0 4\n"
+    "ITEM: ATOMS id type x y z\n1 1 0 0 0\n2 2 2 2 2\n"
+)
+
+
+@pytest.mark.skipif("lammps-dump" not in fastatoms.available_formats(), reason="built without LAMMPS")
+def test_types_map_accepts_int_keys_and_is_lenient() -> None:
+    """types={int: label}: named types resolve, the rest stay X with label "k"."""
+    atoms = fastatoms.io.read_string(_DUMP_TWO_TYPES, "lammps-dump", types={1: "Fe1"})
+    assert not isinstance(atoms, list)
+    assert atoms.labels == ["Fe1", "2"]
+    assert atoms.symbols == ["Fe", "X"]
+    assert atoms.arrays["type"].tolist() == [1, 2]
+    with pytest.raises(fastatoms.FormatError):
+        fastatoms.io.read_string(_DUMP_TWO_TYPES, "lammps-dump", types={1: "Qq"})
+    with pytest.raises(TypeError):
+        fastatoms.io.read_string(_DUMP_TWO_TYPES, "lammps-dump", types={(1,): "Fe"})
