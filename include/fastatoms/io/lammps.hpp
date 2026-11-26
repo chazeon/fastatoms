@@ -61,7 +61,8 @@ struct LammpsDataWriteOptions {
                                             const LammpsDataWriteOptions& options = {});
 
 struct LammpsDumpReadOptions {
-    LammpsTypeMap types{};  ///< "types"; without it and without an element column,
+    LammpsTypeMap types{};  ///< "types"; an entry decides before any element column;
+                            ///< without one and without an element column,
                             ///< type k becomes the dummy element X with label "k"
     bool unwrap{false};     ///< "unwrap": apply the ix iy iz image flags to x, y, z
                             ///< columns. Off (default), x, y, z are taken as written, as

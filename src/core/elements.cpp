@@ -182,7 +182,7 @@ int try_number_from_label(std::string_view label) noexcept {
         return one;
     }
     // Deuterium and tritium are hydrogen; the label keeps the isotope.
-    if (label[0] == 'D' || label[0] == 'T') {
+    if (label[0] == 'D' || label[0] == 'T' || label[0] == 'd' || label[0] == 't') {
         return 1;
     }
     if (letters >= 2 && is_upper(label[0]) && is_upper(label[1])) {

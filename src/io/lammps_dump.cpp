@@ -382,46 +382,43 @@ std::optional<Atoms> read_frame(const std::vector<std::string_view>& lines, std:
         throw FormatError("LAMMPS dump: no coordinate columns (x, xs, xu or xsu)");
     }
 
-    // Species. 'element' wins; otherwise 'type' holds an integer type or a
-    // label (a label is its own species name). The 'type' array is decoded
-    // on its own, so it survives an element column too.
+    // Species, per row: an explicit `types` entry for the row's type decides
+    // (the caller's choice beats the file, and the element column is then
+    // not consulted, nor validated); else the 'element' column; else 'type',
+    // an integer type or a label (a label is its own species name). The
+    // 'type' array is decoded separately below, so it survives either way.
     std::vector<int> numbers(n);
     std::vector<std::string> labels(n);
     const int element_col = column_index("element");
     const int type_col = column_index("type");
-    if (element_col >= 0) {
-        for (std::size_t k = 0; k < n; ++k) {
-            const std::size_t r = order[k];
+    if (element_col < 0 && type_col < 0) {
+        throw FormatError("LAMMPS dump: needs a 'type' or 'element' column");
+    }
+    for (std::size_t k = 0; k < n; ++k) {
+        const std::size_t r = order[k];
+        const std::size_t line = row_lines[r];
+        std::int64_t t = 0;
+        const bool integer_type = type_col >= 0 && try_parse_int(col("type")[r], t);
+        const auto mapped = integer_type ? options.types.find(static_cast<int>(t))
+                                         : options.types.end();
+        if (mapped != options.types.end()) {
+            labels[k] = mapped->second;
+            numbers[k] = element_of_label(mapped->second, line);
+        } else if (element_col >= 0) {
             const std::string label(col("element")[r]);
             labels[k] = label;
-            numbers[k] = label == "X" ? kDummyAtomicNumber
-                                      : element_of_label(label, row_lines[r]);
-        }
-    } else if (type_col >= 0) {
-        for (std::size_t k = 0; k < n; ++k) {
-            const std::size_t r = order[k];
-            const std::size_t line = row_lines[r];
+            numbers[k] = label == "X" ? kDummyAtomicNumber : element_of_label(label, line);
+        } else if (integer_type) {
+            // A type with no label, and not in the map, is the dummy X named by its number.
+            labels[k] = std::to_string(t);
+            numbers[k] = kDummyAtomicNumber;
+        } else {
+            // A type label such as "Fe1" or "O": the element when it names one.
             const std::string_view token = col("type")[r];
-            std::int64_t t = 0;
-            if (try_parse_int(token, t)) {
-                // A type with no label, or not in the map, is the dummy X named by its number.
-                const auto it = options.types.find(static_cast<int>(t));
-                if (it != options.types.end()) {
-                    labels[k] = it->second;
-                    numbers[k] = element_of_label(it->second, line);
-                } else {
-                    labels[k] = std::to_string(t);
-                    numbers[k] = kDummyAtomicNumber;
-                }
-            } else {
-                // A type label such as "Fe1" or "O": the element when it names one.
-                labels[k] = std::string(token);
-                const int z = try_number_from_label(token);
-                numbers[k] = z >= 0 ? z : kDummyAtomicNumber;
-            }
+            labels[k] = std::string(token);
+            const int z = try_number_from_label(token);
+            numbers[k] = z >= 0 ? z : kDummyAtomicNumber;
         }
-    } else {
-        throw FormatError("LAMMPS dump: needs a 'type' or 'element' column");
     }
     // The 'type' array holds integers only, and only when every row has one.
     bool type_numeric = type_col >= 0;

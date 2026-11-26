@@ -216,7 +216,8 @@ line). Read into `velocities`.
     in that priority order (unwrapped preferred, if asked);
   - `ix iy iz`, `vx vy vz`, `fx fy fz`, `q`;
   - any other column becomes a float array.
-- The element column wins over the type map.
+- An explicit `types` entry wins over the element column (the element column
+  is then not consulted); the element column wins over the file's own types.
 - Rows are sorted by id.
 - `index` selects frames (`0`, `-1`, slice) without parsing the others in full.
 

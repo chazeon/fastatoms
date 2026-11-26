@@ -397,9 +397,11 @@ FA_TEST(dump_triclinic_with_image_flags) {
     FA_CHECK(wrapped[0].info()["timestep"].as_int() == 7);
 }
 
-FA_TEST(dump_element_column_overrides_types) {
+FA_TEST(dump_element_column_fills_types_the_map_leaves_out) {
+    // The map names only a type absent from the file, so every row's species
+    // comes from the element column.
     LammpsDumpReadOptions options;
-    options.types = {{1, "O"}, {2, "O"}};  // the element column must win
+    options.types = {{9, "Cu"}};
     const auto frames = read_lammps_dump(read_fixture("element_column.lammpstrj"), options);
     FA_CHECK(frames.size() == 1);
     const Atoms& atoms = frames[0];
@@ -991,6 +993,23 @@ FA_TEST(data_decimals_ignore_german_locale) {
     const Atoms atoms = read_lammps_data(text);
     std::setlocale(LC_NUMERIC, restore.c_str());
     FA_CHECK_CLOSE(atoms.position(0).x, 1.25, 1e-12);
+}
+
+// An explicit types entry decides the species before the element column is
+// looked at, so an element column the map overrides is never validated.
+FA_TEST(dump_types_map_beats_element_column) {
+    const std::string text =
+        "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n2\nITEM: BOX BOUNDS pp pp pp\n"
+        "0 4\n0 4\n0 4\nITEM: ATOMS id type element xs ys zs\n"
+        "1 1 Qq 0.25 0.25 0.25\n2 2 O 0.5 0.5 0.5\n";
+    LammpsDumpReadOptions options;
+    options.types = {{1, "Fe1"}};
+    const Atoms atoms = read_lammps_dump(text, options).front();
+    FA_CHECK(atoms.labels() == (std::vector<std::string>{"Fe1", "O"}));
+    FA_CHECK(atoms.numbers() == (std::vector<int>{26, 8}));
+    FA_CHECK(atoms.int_array("type").data == (std::vector<std::int64_t>{1, 2}));
+    // Without the map the unknown element is still an error.
+    FA_CHECK_THROWS(read_lammps_dump(text), FormatError);
 }
 
 FA_TEST_MAIN()

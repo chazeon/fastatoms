@@ -9,7 +9,7 @@ FA_TEST(labels_resolve_to_elements) {
         {"Fe", 26},     {"Fe1", 26},  {"Fe_pv", 26}, {"Fe_pv1", 26}, {"Fe1_pv", 26},
         {"Fe/abc123", 26}, {"Fe_sv_GW", 26}, {"O2-", 8}, {"Cu1+", 29}, {"H1", 1},
         {"Ow", 8},      {"Os2", 76},  {"CA", 20},    {"FE", 26},     {"X", 0},
-        {" Si ", 14},   {"D", 1},     {"D1", 1},     {"T2", 1},   {"Li_sv", 3}, {"Ga_d", 31},  {"W_pv", 74},   {"Nb_sv", 41},
+        {" Si ", 14},   {"D", 1},     {"D1", 1},     {"T2", 1},     {"d1", 1},     {"CA1", 6},    {"Ca1", 20},   {"Li_sv", 3}, {"Ga_d", 31},  {"W_pv", 74},   {"Nb_sv", 41},
     };
     for (const auto& [label, z] : cases) {
         FA_CHECK(try_number_from_label(label) == z);
