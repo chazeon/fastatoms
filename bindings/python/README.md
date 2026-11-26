@@ -1,8 +1,69 @@
-# fastatoms Python test module
+# fastatoms Python bindings
 
-A pybind11 module, `fastatoms._core`, that exposes the C++ core to Python so the
-parity suite in `tests/py/` can compare it with ASE and vesin. It is a test
-harness only: it is not published to PyPI and carries no stability promise.
+A pybind11 module, `fastatoms._core`, with an ASE-style `fastatoms.io` layer on
+top. It serves two purposes: the parity suite in `tests/py/` compares the C++
+core with ASE, vesin and spglib through it, and downstream code (gemmy's server)
+uses it as a structure reader. It is not published to PyPI; install it from git.
+
+## Install
+
+```sh
+pip install "fastatoms @ git+https://github.com/chazeon/fastatoms@<sha>"
+# or: uv pip install ...   /   uv add "fastatoms @ git+..."
+```
+
+Pin a commit sha. The build needs Python >= 3.10, a C++20 compiler, git and
+network access: CMake fetches gemmi, vesin, spglib and pybind11 at pinned tags,
+and scikit-build-core provides cmake and ninja. A clean build takes about 15 s.
+The only runtime dependency is numpy.
+
+Every feature can be switched off at build time; YAML, MLIP and the other legacy
+modules are never built:
+
+```sh
+pip install "fastatoms @ git+..." -C cmake.define.FASTATOMS_WITH_SYMMETRY=OFF
+# switches: FASTATOMS_WITH_{VASP,XYZ,CIF,LAMMPS,NEIGHBORS,SYMMETRY}, all ON by default
+```
+
+`fastatoms.available_formats()` reports what a given build contains.
+
+## Stable API
+
+The names below are what downstream code may rely on: their signatures and
+semantics change only together with a note here. Everything else (`_core`
+internals, `tests/`, private helpers) may change at any time.
+
+- `fastatoms.io.read(filename, index=None, format=None, **options)`: `filename` is
+  a path, a text or binary file object, or a `.gz` path; ASE's `file@index`
+  syntax is honoured. `index` follows `ase.io.read`: `None` is the last frame
+  (one `Atoms`), an int is one `Atoms`, a slice or a string such as `":"` or
+  `"::2"` is a list. `fastatoms.read` is the same function.
+- `fastatoms.io.read_string(text, format, index=None, **options)`,
+  `fastatoms.io.iread(...)` (every frame by default),
+  `fastatoms.io.write(filename, images, format=None, **options)` and
+  `write_string(...)`. A list of images is accepted for `xyz`, `extxyz` and `cif`.
+- Format names: `vasp`, `xdatcar`, `xyz` (plain), `extxyz`, `cif`, `lammps-data`,
+  `lammps-dump`, with ASE's names accepted as aliases. Guessing follows ASE's
+  precedence: special file names, then strong content signatures, then the
+  extension, then a sniff for unnamed XYZ.
+- Options are passed through per format; an unknown option raises `FormatError`.
+  The important ones: `types={int: label}` (LAMMPS; named types resolve from the
+  map, every other unresolved type becomes `X` with label `"k"`, a label naming no
+  element raises), `unwrap` (LAMMPS image flags, default `False`), `atom_style`,
+  `units` (LAMMPS data mass inference), `disorder` (`keep_all`, `max_occupancy`,
+  `error`) and `merge_tolerance` (CIF, in Å), `species` (VASP 4).
+- `fastatoms.Atoms`: `labels` (the species label as written: `Fe1`, `Fe_pv`,
+  `H1`), `symbols`, `numbers`, `positions`, `cell` (rows are lattice vectors),
+  `pbc`, `scaled_positions(wrap=False)`, `velocities` (as written, file units),
+  `arrays` (`type`, `id`, `image`, `occupancy`, `selective_dynamics`, ... when the
+  file provides them), `info`, `repeat(reps)` (ASE order), `copy()`, `to_ase()`
+  and `Atoms.from_ase(atoms)`.
+- `fastatoms.neighbor_list(quantities, atoms, cutoff)`: the pair set, `S`, `D` and
+  `d` of `ase.neighborlist.neighbor_list`, sorted by `(i, j, S)`.
+- `fastatoms.FormatError` (a `ValueError`) for every malformed or unsupported
+  input.
+- Deliberate differences from ASE are listed in `tests/py/test_formats.py`
+  (`DELIBERATE_DIFFERENCES`) and asserted by the test suite.
 
 ## What is bound
 

@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
 #
-# Python test harness for the C++ core. The pybind11 module is for testing
-# only and is not published to PyPI.
+# Python bindings for the C++ core (pybind11). Used by the parity suite in
+# tests/py and installable from git as a structure reader; not on PyPI.
+#
+#   pip install "fastatoms @ git+https://github.com/chazeon/fastatoms@<sha>"
 #
 #   uv sync          build and install fastatoms with the dev group
 #   uv run pytest    run the parity suite in tests/py
@@ -20,7 +22,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "fastatoms"
 version = "0.3.0"
-description = "Test-only pybind11 bindings for the fastatoms C++ core (not for PyPI)"
+description = "Structure-file IO (VASP, XYZ/extXYZ, CIF, LAMMPS), labels and ASE-compatible neighbour lists, in C++ with Python bindings"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.26"]
 
