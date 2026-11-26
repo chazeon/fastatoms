@@ -15,8 +15,8 @@
  * which needs the async path, so they are an error for the synchronous inputs.
  */
 
-import { Atoms } from "./atoms.js";
-import { requireModule } from "./module.js";
+import { Atoms, discardRaw } from "./atoms.js";
+import { native, requireModule } from "./module.js";
 
 /** What `read` accepts as text-bearing input. */
 export type TextInput = string | ArrayBuffer | Uint8Array;
@@ -39,16 +39,19 @@ export interface IOOptions {
    */
   filename?: string;
   /**
-   * Frames to read, as in ASE. `undefined` (default): the last frame. An
-   * integer or an integer string: that one frame, negatives count from the
+   * Frames to read, as in ASE. `undefined` or `null` (default): the last frame.
+   * An integer or an integer string: that one frame, negatives count from the
    * end. A slice string (":", "::2", "-3:", "1:5"): an array of frames.
    */
-  index?: number | string;
+  index?: number | string | null;
   [option: string]: unknown;
 }
 
+/** Options for a read that returns one frame: no slice index. */
+export type SingleFrameOptions = IOOptions & { index?: number | null };
+
 /** The type `read` returns for the `index` option `I`. */
-export type IndexResult<I> = [I] extends [undefined]
+export type IndexResult<I> = [I] extends [undefined | null]
   ? Atoms
   : [I] extends [number]
     ? Atoms
@@ -61,15 +64,22 @@ export type IndexResult<I> = [I] extends [undefined]
 /** The `index` type of an options object `O`; `undefined` when not given. */
 type IndexOf<O> = "index" extends keyof O ? O["index"] : undefined;
 
-const MULTI_FRAME_WRITERS: ReadonlySet<string> = new Set(["xyz", "extxyz"]);
-const SLICE_PATTERN = /^[+-]?\d*$/;
+const SLICE_FIELD = /^[+-]?\d+$/;
 
 // ---------------------------------------------------------------------------
 // Input decoding
 // ---------------------------------------------------------------------------
 
+/**
+ * Duck typing, not `instanceof Blob`: a Blob or File made in another window,
+ * worker or realm fails `instanceof` but has the same methods.
+ */
 function isBlob(input: IOInput): input is Blob {
-  return typeof Blob !== "undefined" && input instanceof Blob;
+  if (typeof input !== "object" || input === null) {
+    return false;
+  }
+  const candidate = input as Partial<Blob>;
+  return typeof candidate.arrayBuffer === "function" && typeof candidate.size === "number";
 }
 
 function isGzip(bytes: Uint8Array): boolean {
@@ -107,8 +117,15 @@ function baseName(filename: string | undefined): string | undefined {
   return filename?.replace(/\.gz$/i, "");
 }
 
+/**
+ * The core picks the format from the name and the content head together, and
+ * a strong content signature (a LAMMPS dump magic line in traj.xyz) wins over
+ * the extension. This layer only passes both on.
+ */
 function guessOrFail(filename: string | undefined, head: string, label: string): string {
-  const guessed = requireModule().guessFormat(baseName(filename) ?? "", head);
+  const mod = requireModule();
+  const name = baseName(filename) ?? "";
+  const guessed = native(() => mod.guessFormat(name, head));
   if (guessed === "") {
     throw new Error(
       `cannot determine the structure format of ${label}: pass { format }, or a { filename } with a known extension`,
@@ -117,11 +134,14 @@ function guessOrFail(filename: string | undefined, head: string, label: string):
   return guessed;
 }
 
+/** Head of the text the format guess sees: enough for every content signature. */
+const GUESS_HEAD_CHARS = 4096;
+
 function resolveFormat(format: string | undefined, filename: string | undefined, text: string, label: string): string {
   if (format !== undefined && format !== "") {
     return format;
   }
-  return guessOrFail(filename, text.slice(0, 4096), label);
+  return guessOrFail(filename, text.slice(0, GUESS_HEAD_CHARS), label);
 }
 
 // ---------------------------------------------------------------------------
@@ -129,10 +149,7 @@ function resolveFormat(format: string | undefined, filename: string | undefined,
 // ---------------------------------------------------------------------------
 
 /** Python slice semantics over `n` frames: the frame positions it selects. */
-function sliceIndices(n: number, start?: number, stop?: number, step = 1): number[] {
-  if (step === 0) {
-    throw new Error("index slice: step cannot be zero");
-  }
+function sliceIndices(n: number, start: number | undefined, stop: number | undefined, step: number): number[] {
   let from: number;
   let to: number;
   if (step > 0) {
@@ -149,18 +166,36 @@ function sliceIndices(n: number, start?: number, stop?: number, step = 1): numbe
   return out;
 }
 
+/** One slice field: empty (undefined), or an optional sign and digits. */
 function parseSliceField(field: string | undefined, spec: string): number | undefined {
-  if (field === undefined || field.trim() === "") {
+  const trimmed = (field ?? "").trim();
+  if (trimmed === "") {
     return undefined;
   }
-  if (!SLICE_PATTERN.test(field.trim())) {
+  if (!SLICE_FIELD.test(trimmed)) {
     throw new Error(`invalid index slice "${spec}"`);
   }
-  return Number.parseInt(field, 10);
+  return Number.parseInt(trimmed, 10);
 }
 
-function parseIndex(index: number | string | undefined): number | "slice" {
-  if (index === undefined) {
+/** A slice string, validated in full before any frame is built. */
+function parseSlice(spec: string): { start: number | undefined; stop: number | undefined; step: number } {
+  const parts = spec.split(":");
+  if (parts.length > 3) {
+    throw new Error(`invalid index slice "${spec}"`);
+  }
+  const start = parseSliceField(parts[0], spec);
+  const stop = parseSliceField(parts[1], spec);
+  const step = parseSliceField(parts[2], spec) ?? 1;
+  if (step === 0) {
+    throw new Error(`index slice "${spec}": step cannot be zero`);
+  }
+  return { start, stop, step };
+}
+
+/** A frame number, or "slice". `null` and `undefined` both mean the last frame. */
+function parseIndex(index: number | string | null | undefined): number | "slice" {
+  if (index === undefined || index === null) {
     return -1;
   }
   if (typeof index === "number") {
@@ -194,18 +229,13 @@ function readText(text: string, filename: string | undefined, options: IOOptions
   const json = (extra: Record<string, unknown>): string => JSON.stringify({ ...formatOptions, ...extra });
 
   if (frameIndex !== "slice") {
-    return new Atoms(mod.read(text, resolved, json({ index: frameIndex })));
+    return new Atoms(native(() => mod.read(text, resolved, json({ index: frameIndex })), discardRaw));
   }
 
-  const spec = options.index as string;
-  const parts = spec.split(":");
-  if (parts.length > 3) {
-    throw new Error(`invalid index slice "${spec}"`);
-  }
-  const start = parseSliceField(parts[0], spec);
-  const stop = parseSliceField(parts[1], spec);
-  const step = parseSliceField(parts[2], spec) ?? 1;
-  const frames = mod.readAll(text, resolved, json({})).map((raw) => new Atoms(raw));
+  // Validate the whole slice first, so a malformed one builds no frames.
+  const { start, stop, step } = parseSlice(options.index as string);
+  const raws = native(() => mod.readAll(text, resolved, json({})));
+  const frames = raws.map((raw) => new Atoms(raw));
   const order = sliceIndices(frames.length, start, stop, step);
   const keep = new Set(order);
   const chosen = new Map<number, Atoms>();
@@ -230,23 +260,19 @@ async function readBlob(blob: Blob, options: IOOptions): Promise<Atoms | Atoms[]
 }
 
 /**
- * Read structures from text or bytes. Returns one `Atoms` for `index` undefined,
- * an integer or an integer string; an `Atoms[]` for a slice string. A Blob or
- * File gives a Promise of the same.
+ * Read structures from text or bytes. Returns one `Atoms` when `index` is
+ * left out, `null`, or an integer (or integer string); an `Atoms[]` for a
+ * slice string. A Blob or File gives a Promise of the same.
  *
  * @example
  *   io.read(text, { format: "extxyz" });               // last frame
  *   io.read(text, { format: "extxyz", index: ":" });   // all frames
  *   await io.read(file, { index: -2 });                // from a File, gzip ok
  */
-export function read<const O extends IOOptions = Record<string, never>>(
-  input: TextInput,
-  options?: O,
-): IndexResult<IndexOf<O>>;
-export function read<const O extends IOOptions = Record<string, never>>(
-  input: Blob,
-  options?: O,
-): Promise<IndexResult<IndexOf<O>>>;
+export function read(input: TextInput, options?: SingleFrameOptions): Atoms;
+export function read(input: Blob, options?: SingleFrameOptions): Promise<Atoms>;
+export function read<const O extends IOOptions>(input: TextInput, options: O): IndexResult<IndexOf<O>>;
+export function read<const O extends IOOptions>(input: Blob, options: O): Promise<IndexResult<IndexOf<O>>>;
 export function read(input: IOInput, options: IOOptions = {}): Atoms | Atoms[] | Promise<Atoms | Atoms[]> {
   if (isBlob(input)) {
     return readBlob(input, options);
@@ -275,9 +301,9 @@ export interface WriteOptions {
 }
 
 /**
- * Serialise one structure, or a list of them for multi-frame formats (xyz,
- * extxyz), and return the text. The format comes from `format`, else from
- * `filename`.
+ * Serialise one structure, or a list of them, and return the text. A list
+ * needs a format that holds several frames (xyz, extxyz, cif). The format
+ * comes from `format`, else from `filename`.
  *
  * @throws if no format can be found, if a list is given for a single-frame
  *   format (as ASE does), or if the list is empty.
@@ -298,15 +324,17 @@ export function write(atoms: Atoms | readonly Atoms[], options: WriteOptions = {
   const mod = requireModule();
   const json = JSON.stringify(formatOptions);
   if (atoms instanceof Atoms) {
-    return mod.write(atoms.rawHandle(), format, json);
+    const handle = atoms.rawHandle();
+    return native(() => mod.write(handle, format, json));
   }
-  if (!MULTI_FRAME_WRITERS.has(format)) {
+  if (!mod.canWriteFrames(format)) {
     throw new Error(
-      `write: format "${format}" holds one structure; pass a single Atoms (multi-frame formats: xyz, extxyz)`,
+      `write: format "${format}" holds one structure; pass a single Atoms (multi-frame formats: xyz, extxyz, cif)`,
     );
   }
   if (atoms.length === 0) {
     throw new Error("write: the list of structures is empty");
   }
-  return atoms.map((frame) => mod.write(frame.rawHandle(), format, json)).join("");
+  const handles = atoms.map((frame) => frame.rawHandle());
+  return native(() => mod.writeAll(handles, format, json));
 }

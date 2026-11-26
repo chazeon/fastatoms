@@ -53,22 +53,26 @@ io.read(text, { format: "extxyz", index: ":" });    // Atoms[]: all frames
 io.read(text, { format: "extxyz", index: "::2" });  // Atoms[]: every 2nd
 const atoms = await io.read(file);                  // File or Blob: Promise
 io.write(atoms, { filename: "CONTCAR" });           // string
-io.write(frames, { format: "extxyz" });             // list: xyz/extxyz only
+io.write(frames, { format: "cif" });                // list: xyz, extxyz, cif
 ```
 
 - Input: a string, an `ArrayBuffer` or `Uint8Array` (UTF-8, BOM stripped), or a
   `Blob`/`File`. A Blob or File makes the call async and returns a Promise.
   A File supplies its name for the format guess.
-- `index`: `undefined` is the last frame; an integer (or integer string) is one
-  frame, negatives count from the end; a slice string (`":"`, `"::2"`,
-  `"-3:"`, `"1:5"`) gives `Atoms[]`. The return type follows `index`.
+- `index`: `undefined` or `null` is the last frame; an integer (or integer
+  string) is one frame, negatives count from the end; a slice string (`":"`,
+  `"::2"`, `"-3:"`, `"1:5"`) gives `Atoms[]`. The return type follows `index`.
+  A slice field is empty or an optional sign followed by digits, and the step
+  cannot be 0; anything else throws before a frame is read.
 - Format: from `format`, else from the filename, else from the content. A
   `.gz` suffix is ignored for the guess. An unknown format throws an Error that
   names the file.
 - Gzip: bytes that start with `1f 8b` are inflated with `DecompressionStream`
   on the Blob/File path. Gzipped strings or buffers are an error.
-- `io.write` returns text. A list is accepted only for xyz and extxyz, as in
-  ASE. A `.gz` filename is refused, since the result is text.
+- `io.write` returns text. A list is written as several frames (xyz, extxyz) or
+  several CIF data blocks (cif). Formats that hold one structure reject a list;
+  this is this package's rule, not ASE's. A `.gz` filename is refused, since
+  the result is text.
 
 ## Symmetry (spglib)
 
@@ -186,9 +190,9 @@ passed to CMake and wins over the preset.
 
 | Preset | Formats | Neighbours | Symmetry | `fastatoms.wasm` | gzip -9 |
 | --- | --- | --- | --- | --- | --- |
-| `--full` (default) | VASP, XDATCAR, XYZ, extXYZ, CIF, LAMMPS data and dump | yes | yes (spglib) | 839,722 bytes (820 KiB) | 328,099 bytes |
-| `--minimal` | VASP, XDATCAR, XYZ, extXYZ | yes | no | 419,114 bytes (409 KiB) | 188,399 bytes |
-| `--gemmy` | VASP, XDATCAR, XYZ, extXYZ, CIF | yes | no | 533,734 bytes (521 KiB) | 244,260 bytes |
+| `--full` (default) | VASP, XDATCAR, XYZ, extXYZ, CIF, LAMMPS data and dump | yes | yes (spglib) | 854,719 bytes (835 KiB) | 334,180 bytes |
+| `--minimal` | VASP, XDATCAR, XYZ, extXYZ | yes | no | 337,697 bytes (330 KiB) | 159,714 bytes |
+| `--gemmy` | VASP, XDATCAR, XYZ, extXYZ, CIF | yes | no | 546,333 bytes (534 KiB) | 248,827 bytes |
 
 Sizes are for `-Oz` (`MinSizeRel`), with LTO, emmalloc and no file system, on
 Emscripten 7.0.1. Before these changes the same presets measured 592,873 bytes

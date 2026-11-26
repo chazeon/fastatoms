@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import { requireModule } from "./module.js";
+import { native, requireModule } from "./module.js";
 import type { RawAtoms } from "./raw.js";
 
 /** A Cartesian or fractional triple. */
@@ -38,6 +38,11 @@ const registry = new FinalizationRegistry<RawAtoms>((raw) => {
     raw.delete();
   }
 });
+
+/** Releases a handle that a failed call returned, so it is not left to the GC. */
+export function discardRaw(raw: RawAtoms): void {
+  raw.delete();
+}
 
 function flattenCell(cell: ArrayLike<number> | readonly Vec3[]): number[] {
   const out: number[] = [];
@@ -149,24 +154,38 @@ export class Atoms {
     return this.rawHandle().getPositions();
   }
 
-  /** Replace all positions (flat 3N). */
+  /**
+   * Replace all positions (flat 3N).
+   *
+   * Caller-controlled array-likes are copied before the handle is taken: a
+   * getter on the input may run arbitrary code, `dispose()` included.
+   */
   setPositions(positions: ArrayLike<number>): void {
-    this.rawHandle().setPositions(positions);
+    const data = Float64Array.from(positions);
+    const raw = this.rawHandle();
+    native(() => raw.setPositions(data));
   }
 
   /** Set the lattice; with `scaleAtoms` the fractional coordinates are kept. */
   setCell(cell: ArrayLike<number> | readonly Vec3[], scaleAtoms = false): void {
-    this.rawHandle().setCell(flattenCell(cell), scaleAtoms);
+    const data = Float64Array.from(flattenCell(cell));
+    const keep = Boolean(scaleAtoms);
+    const raw = this.rawHandle();
+    native(() => raw.setCell(data, keep));
   }
 
   /** Set periodicity: one flag for all axes, or one per axis. */
   setPbc(pbc: boolean | readonly [boolean, boolean, boolean]): void {
-    this.rawHandle().setPbc(pbcFlags(pbc));
+    const flags = pbcFlags(pbc);
+    const raw = this.rawHandle();
+    native(() => raw.setPbc(flags));
   }
 
   /** Fractional coordinates, flat 3N copy. `wrap` folds them into [0, 1). */
   getScaledPositions(options: { wrap?: boolean } = {}): Float64Array {
-    return this.rawHandle().getScaledPositions(options.wrap ?? false);
+    const wrap = Boolean(options.wrap);
+    const raw = this.rawHandle();
+    return native(() => raw.getScaledPositions(wrap));
   }
 
   /** Element symbol of every atom ("H" for the label "H1"). */
@@ -193,7 +212,8 @@ export class Atoms {
    * @throws if there is no array with that name.
    */
   getArray(name: string): Float64Array | string[] {
-    return this.rawHandle().getArray(name);
+    const raw = this.rawHandle();
+    return native(() => raw.getArray(name));
   }
 
   /** Name, kind and column count of every per-atom array. */
@@ -214,22 +234,27 @@ export class Atoms {
    */
   repeat(n: number | readonly [number, number, number]): Atoms {
     const [nx, ny, nz] = typeof n === "number" ? [n, n, n] : n;
-    return new Atoms(this.rawHandle().repeat(nx, ny, nz));
+    const raw = this.rawHandle();
+    return new Atoms(native(() => raw.repeat(nx, ny, nz), discardRaw));
   }
 
   /** New atoms holding only `indices`, in the given order. */
   subset(indices: ArrayLike<number>): Atoms {
-    return new Atoms(this.rawHandle().subset(indices));
+    const data = Float64Array.from(indices);
+    const raw = this.rawHandle();
+    return new Atoms(native(() => raw.subset(data), discardRaw));
   }
 
   /** Fold every atom into the cell along the periodic axes (in place). */
   wrap(): void {
-    this.rawHandle().wrap();
+    const raw = this.rawHandle();
+    native(() => raw.wrap());
   }
 
   /** An independent copy. */
   copy(): Atoms {
-    return new Atoms(this.rawHandle().copy());
+    const raw = this.rawHandle();
+    return new Atoms(native(() => raw.copy(), discardRaw));
   }
 
   /** Cell volume in cubic angstrom (0 for a zero cell). */
@@ -247,10 +272,13 @@ export class Atoms {
     if (hasSymbols === hasNumbers) {
       throw new Error("Atoms.fromArrays: give exactly one of `symbols` or `numbers`");
     }
-    const species: ArrayLike<number> | ArrayLike<string> =
-      spec.symbols !== undefined ? spec.symbols : (spec.numbers as ArrayLike<number>);
-    const cell = spec.cell === undefined || spec.cell === null ? null : flattenCell(spec.cell);
-    const raw = requireModule().fromArrays(species, spec.positions, cell, pbcFlags(spec.pbc));
-    return new Atoms(raw);
+    // Copy every input before the native call (see setPositions).
+    const species: number[] | string[] =
+      spec.symbols !== undefined ? Array.from(spec.symbols) : Array.from(spec.numbers as ArrayLike<number>);
+    const positions = Float64Array.from(spec.positions);
+    const cell = spec.cell === undefined || spec.cell === null ? null : Float64Array.from(flattenCell(spec.cell));
+    const pbc = pbcFlags(spec.pbc);
+    const mod = requireModule();
+    return new Atoms(native(() => mod.fromArrays(species, positions, cell, pbc), discardRaw));
   }
 }

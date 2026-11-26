@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "fastatoms/io/format.hpp"
 
+#include "fastatoms/core/elements.hpp"
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -204,11 +205,12 @@ std::vector<Atoms> dispatch_read(std::string_view text, const std::string& forma
 #endif
 #ifdef FASTATOMS_WITH_LAMMPS
     if (format == "lammps-data") {
-        check_keys(options, format, {"atom_style", "types", "unwrap"});
+        check_keys(options, format, {"atom_style", "types", "unwrap", "units"});
         LammpsDataReadOptions o;
         o.atom_style = get_string(options, "atom_style", "");
         o.types = get_types(options);
         o.unwrap = get_bool(options, "unwrap", false);
+        o.units = get_string(options, "units", "metal");
         return {read_lammps_data(text, o)};
     }
     if (format == "lammps-dump") {
@@ -302,44 +304,201 @@ std::string write(const Atoms& atoms, const std::string& format_in, const Value&
     throw FormatError("format '" + format + "' cannot be written in this build");
 }
 
+bool can_write_frames(const std::string& format_in) {
+    const std::string format = canonical(format_in);
+    return (format == "xyz" || format == "extxyz" || format == "cif") && can_write(format);
+}
+
+std::string write_all(const std::vector<Atoms>& frames, const std::string& format_in,
+                      const Value& options) {
+    const std::string format = canonical(format_in);
+    if (frames.empty()) {
+        throw FormatError("no frames to write");
+    }
+    if (frames.size() == 1) {
+        return write(frames.front(), format, options);
+    }
+    if (!can_write_frames(format)) {
+        throw FormatError("format '" + format + "' holds one structure; got " +
+                          std::to_string(frames.size()) + " frames");
+    }
+#ifdef FASTATOMS_WITH_CIF
+    if (format == "cif") {
+        check_keys(options, format, {});
+        return write_cif(frames);
+    }
+#endif
+    // xyz/extxyz: frames are simply concatenated.
+    std::string out;
+    for (const Atoms& frame : frames) {
+        out += write(frame, format, options);
+    }
+    return out;
+}
+
+namespace {
+
+/// Trims ASCII whitespace from both ends.
+std::string_view trim_view(std::string_view s) {
+    const auto space = [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; };
+    while (!s.empty() && space(s.front())) {
+        s.remove_prefix(1);
+    }
+    while (!s.empty() && space(s.back())) {
+        s.remove_suffix(1);
+    }
+    return s;
+}
+
+/// Lines of `text`, without their terminators (a trailing '\r' is dropped).
+std::vector<std::string_view> lines_of(std::string_view text) {
+    std::vector<std::string_view> lines;
+    while (!text.empty()) {
+        const auto nl = text.find('\n');
+        std::string_view line = text.substr(0, nl);
+        if (!line.empty() && line.back() == '\r') {
+            line.remove_suffix(1);
+        }
+        lines.push_back(line);
+        if (nl == std::string_view::npos) {
+            break;
+        }
+        text.remove_prefix(nl + 1);
+    }
+    return lines;
+}
+
+/// Whitespace-separated tokens of `line`.
+std::vector<std::string_view> tokens_of(std::string_view line) {
+    std::vector<std::string_view> tokens;
+    while (true) {
+        line = trim_view(line);
+        if (line.empty()) {
+            return tokens;
+        }
+        const auto end = std::min(line.find_first_of(" \t"), line.size());
+        tokens.push_back(line.substr(0, end));
+        line.remove_prefix(end);
+    }
+}
+
+bool is_real(std::string_view token) {
+    double value = 0.0;
+    const char* last = token.data() + token.size();
+    const auto [ptr, ec] = std::from_chars(token.data(), last, value);
+    return !token.empty() && ec == std::errc{} && ptr == last;
+}
+
+/// LAMMPS dump magic, as ASE matches it: a line that is exactly "ITEM: TIMESTEP".
+bool has_lammps_dump_magic(const std::vector<std::string_view>& lines) {
+    return std::any_of(lines.begin(), lines.end(), [](std::string_view line) {
+        return trim_view(line) == "ITEM: TIMESTEP";
+    });
+}
+
+bool has_cif_signature(std::string_view head) {
+    return head.find("data_") != std::string_view::npos &&
+           head.find("_cell_length") != std::string_view::npos;
+}
+
+/// A LAMMPS data header: an "atoms" count line and a "<lo> <hi> xlo xhi" box line.
+bool has_lammps_data_signature(const std::vector<std::string_view>& lines) {
+    bool atoms = false;
+    bool box = false;
+    for (const std::string_view line : lines) {
+        atoms = atoms || line.find("atoms") != std::string_view::npos;
+        const std::string_view t = trim_view(line);
+        box = box || (t.size() >= 7 && t.substr(t.size() - 7) == " xlo xhi");
+    }
+    return atoms && box;
+}
+
+/// The plain-XYZ shape: the first non-blank line is an atom count, and the
+/// third line (counted from that one) is an atom row, a label then three numbers.
+/// Only consulted for input with no name or extension, as ASE does.
+bool looks_like_xyz(std::string_view head) {
+    const auto lines = lines_of(head);
+    std::size_t i = 0;
+    while (i < lines.size() && trim_view(lines[i]).empty()) {
+        ++i;
+    }
+    if (i + 2 >= lines.size()) {
+        return false;
+    }
+    const std::string_view count = trim_view(lines[i]);
+    if (!std::all_of(count.begin(), count.end(),
+                     [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; })) {
+        return false;
+    }
+    const auto row = tokens_of(lines[i + 2]);
+    return row.size() >= 4 && try_number_from_label(row[0]) >= 0 && is_real(row[1]) &&
+           is_real(row[2]) && is_real(row[3]);
+}
+
+}  // namespace
+
 std::string guess_format(std::string_view filename, std::string_view head) {
     std::string name = lower(filename);
     if (const auto slash = name.find_last_of("/\\"); slash != std::string::npos) {
         name = name.substr(slash + 1);
     }
-    const auto ends_with = [&name](std::string_view suffix) {
-        return name.size() >= suffix.size() &&
-               name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
-    };
+    // A compression suffix is transparent: "traj.xyz.gz" is an XYZ file.
+    for (const char* compression : {".gz", ".bz2", ".xz"}) {
+        const std::string_view suffix(compression);
+        if (name.size() > suffix.size() &&
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            name.resize(name.size() - suffix.size());
+            break;
+        }
+    }
     const auto has = [&name](std::string_view part) {
         return name.find(part) != std::string::npos;
     };
+    // The extension of the basename, if it has one.
+    const auto dot = name.find_last_of('.');
+    const bool has_ext = dot != std::string::npos;
+    const std::string ext = has_ext ? name.substr(dot + 1) : std::string();
+
+    // ASE order: special file names, then content signatures, then the extension,
+    // then an XYZ sniff for input that has neither a name nor an extension.
     std::string guess;
     if (has("xdatcar")) {
         guess = "xdatcar";
-    } else if (has("poscar") || has("contcar") || ends_with(".vasp")) {
+    } else if (has("poscar") || has("contcar") || has("centcar")) {
         guess = "vasp";
-    } else if (ends_with(".extxyz")) {
-        guess = "extxyz";
-    } else if (ends_with(".xyz")) {
-        guess = "extxyz";  // the extxyz reader also reads plain XYZ
-    } else if (ends_with(".cif")) {
-        guess = "cif";
-    } else if (ends_with(".lammpstrj") || ends_with(".dump") || has("dump.")) {
-        guess = "lammps-dump";
-    } else if (ends_with(".data") || ends_with(".lmp") || has("data.")) {
-        guess = "lammps-data";
-    }
-    if (guess.empty() && !head.empty()) {
-        if (head.find("ITEM: TIMESTEP") != std::string_view::npos) {
+    } else if (!head.empty()) {
+        const auto lines = lines_of(head);
+        if (has_lammps_dump_magic(lines)) {
             guess = "lammps-dump";
-        } else if (head.find("data_") != std::string_view::npos &&
-                   head.find("_cell_length_a") != std::string_view::npos) {
+        } else if (has_cif_signature(head)) {
             guess = "cif";
-        } else if (head.find("atoms") != std::string_view::npos &&
-                   head.find("xlo xhi") != std::string_view::npos) {
+        } else if (has_lammps_data_signature(lines)) {
             guess = "lammps-data";
         }
+    }
+    if (guess.empty() && has_ext) {
+        if (ext == "xyz" || ext == "extxyz") {
+            guess = "extxyz";  // the extxyz reader also reads plain XYZ
+        } else if (ext == "cif") {
+            guess = "cif";
+        } else if (ext == "vasp" || ext == "poscar") {
+            guess = "vasp";
+        } else if (ext == "lammpstrj" || ext == "dump") {
+            guess = "lammps-dump";
+        } else if (ext == "data" || ext == "lmp") {
+            guess = "lammps-data";
+        }
+    }
+    if (guess.empty()) {
+        // LAMMPS naming convention without an extension: dump.1000, data.box.
+        if (name.rfind("dump.", 0) == 0) {
+            guess = "lammps-dump";
+        } else if (name.rfind("data.", 0) == 0) {
+            guess = "lammps-data";
+        }
+    }
+    if (guess.empty() && !has_ext && looks_like_xyz(head)) {
+        guess = "extxyz";
     }
     const auto available = available_formats();
     if (!guess.empty() &&

@@ -9,8 +9,9 @@
 ///    type/id, image flags) are converted to Float64Array because embind has
 ///    no BigInt64Array mapping.
 ///  - Options cross as JSON text and are parsed into fastatoms::Value.
-///  - Every entry point catches std::exception and rethrows it as a JS Error
-///    carrying the same message.
+///  - Every entry point that can fail catches the C++ exception and records
+///    its message (take_error). Nothing throws into JS from C++; the TS layer
+///    checks take_error() after each call and throws the Error itself.
 
 #include <array>
 #include <cerrno>
@@ -24,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -51,17 +53,53 @@ using emscripten::val;
 namespace {
 
 // ---------------------------------------------------------------------------
-// Errors: C++ exceptions -> JS Error(message)
+// Errors: C++ exceptions -> message, raised as a JS Error by the TS layer
+//
+// A JS exception must never be thrown from inside a C++ catch block: the
+// unwinder state (__cxa_end_catch, the exception object) is left behind and
+// later calls trap. So an entry point catches, copies the message into
+// g_last_error, and returns normally with a placeholder. The TS wrapper
+// (js/src/module.ts, `native`) calls take_error() right after the call and
+// throws there, once the native frame has unwound.
 // ---------------------------------------------------------------------------
 
+std::string g_last_error;
+
+void record_error(const char* what) {
+    g_last_error = (what != nullptr && *what != '\0') ? what : "unknown error";
+}
+
+/// Run `body`. On a C++ exception, record its message and return a default
+/// value; the caller must check take_error() before using the result.
 template <typename F>
-decltype(auto) guarded(F&& body) {
-    try {
-        return std::forward<F>(body)();
-    } catch (const std::exception& e) {
-        val::global("Error").new_(std::string(e.what())).throw_();
-        __builtin_unreachable();
+auto guarded(F&& body) -> std::invoke_result_t<F&> {
+    using R = std::invoke_result_t<F&>;
+    if constexpr (std::is_void_v<R>) {
+        try {
+            body();
+        } catch (const std::exception& e) {
+            record_error(e.what());
+        } catch (...) {
+            record_error(nullptr);
+        }
+    } else {
+        try {
+            return body();
+        } catch (const std::exception& e) {
+            record_error(e.what());
+        } catch (...) {
+            record_error(nullptr);
+        }
+        return R{};
     }
+}
+
+/// The message of the last failed entry point, or "" when none failed since
+/// the previous call. Clears the record.
+std::string take_error() {
+    std::string out;
+    out.swap(g_last_error);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -652,8 +690,25 @@ std::string write_js(const fa::Atoms& atoms, const std::string& format, const st
 }
 
 std::string guess_format_js(const std::string& name, const std::string& head) {
-    return fa::io::guess_format(name, head);
+    return guarded([&] { return fa::io::guess_format(name, head); });
 }
+
+/// Several frames as one text. `frames` is a JS array of Atoms handles; each
+/// is copied into a std::vector before the call, so no JS code runs while the
+/// C++ side is reading them.
+std::string write_all_js(const val& frames, const std::string& format, const std::string& options) {
+    return guarded([&] {
+        const std::size_t n = js_length(frames);
+        std::vector<fa::Atoms> list;
+        list.reserve(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            list.push_back(frames[i].as<fa::Atoms>());
+        }
+        return fa::io::write_all(list, format, parse_options(options));
+    });
+}
+
+bool can_write_frames_js(const std::string& format) { return fa::io::can_write_frames(format); }
 
 val available_formats_js() { return string_list(fa::io::available_formats()); }
 
@@ -833,6 +888,9 @@ EMSCRIPTEN_BINDINGS(fastatoms) {
     function("guessFormat", &guess_format_js);
     function("availableFormats", &available_formats_js);
     function("canWrite", &can_write_js);
+    function("canWriteFrames", &can_write_frames_js);
+    function("writeAll", &write_all_js);
+    function("takeError", &take_error);
     function("fromArrays", &from_arrays_js);
 #ifdef FASTATOMS_WITH_NEIGHBORS
     function("neighborList", &neighbor_list_js);

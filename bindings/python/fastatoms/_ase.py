@@ -40,12 +40,17 @@ def to_ase(self: Any) -> Any:
     )
     # Labels always travel with the structure, even when they are the symbols.
     atoms.arrays["labels"] = np.array(self.labels, dtype=str)
+    has_velocities = "momenta" in self.arrays
     for name, value in self.arrays.items():
-        if name in ("numbers", "positions", "labels"):
+        if name in ("numbers", "positions", "labels", "momenta"):
             continue
         if name == "charges":
             name = "initial_charges"
         atoms.arrays[name] = np.asarray(value)
+    if has_velocities:
+        # Velocities are what fastatoms stores; ASE derives momenta from its own
+        # masses. Copying momenta would lose the velocity of a mass-0 dummy atom.
+        atoms.set_velocities(np.asarray(self.velocities))  # type: ignore[no-untyped-call]  # ase leaves it untyped
     atoms.info = _plain(self.info)
     return atoms
 

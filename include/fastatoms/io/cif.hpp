@@ -38,4 +38,8 @@ struct CifReadOptions {
 /// those characters replaced by '_'; reserved words are quoted.
 [[nodiscard]] std::string write_cif(const Atoms& atoms);
 
+/// One data block per frame, named data_<formula>_<k> (k from 1) so that
+/// block names stay unique.
+[[nodiscard]] std::string write_cif(const std::vector<Atoms>& frames);
+
 }  // namespace fastatoms::io

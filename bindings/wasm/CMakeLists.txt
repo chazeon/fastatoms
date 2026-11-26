@@ -62,6 +62,7 @@ target_link_options(fastatoms_wasm PRIVATE
     -sEXPORT_ES6=1
     -sEXPORT_NAME=createFastAtoms
     -sALLOW_MEMORY_GROWTH=1
+    -sEXPORTED_RUNTIME_METHODS=HEAP8
     -sENVIRONMENT=web,node,worker
     --closure=1)
 

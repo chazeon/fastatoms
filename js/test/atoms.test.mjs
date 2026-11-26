@@ -201,3 +201,27 @@ test("info numbers survive the JSON hop with their shortest exact form", () => {
   assert.equal(atoms.info.energy, -1.1);
   assert.equal(atoms.info.label, "a b");
 });
+
+test("an ArrayLike getter that disposes the Atoms gives a clean Error, not garbage", () => {
+  // The input is copied before the handle is used, so dispose() inside a
+  // getter is seen as a disposed object, never as a dangling pointer.
+  const disposingInput = (atoms, length) => ({
+    length,
+    get 0() {
+      atoms.dispose();
+      return 1;
+    },
+    1: 0,
+    2: 0,
+  });
+  const setters = [
+    (atoms) => atoms.setPositions(disposingInput(atoms, 3)),
+    (atoms) => atoms.setCell(disposingInput(atoms, 9)),
+    (atoms) => atoms.subset(disposingInput(atoms, 1)),
+  ];
+  for (const call of setters) {
+    const atoms = Atoms.fromArrays({ symbols: ["H"], positions: [0, 0, 0], cell: [5, 0, 0, 0, 5, 0, 0, 0, 5] });
+    assert.throws(() => call(atoms), { name: "Error", message: "Atoms has been disposed" });
+    assert.equal(atoms.disposed, true);
+  }
+});

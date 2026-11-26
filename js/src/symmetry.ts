@@ -15,8 +15,8 @@
  * label (Fe1, Fe2 are different sites) instead of by element.
  */
 
-import { Atoms } from "./atoms.js";
-import { requireModule } from "./module.js";
+import { Atoms, discardRaw } from "./atoms.js";
+import { native, requireModule } from "./module.js";
 import type { RawModule, RawSymmetryDataset } from "./raw.js";
 
 /** Tolerances shared by every symmetry function. */
@@ -110,11 +110,9 @@ export function hasSymmetry(): boolean {
 /** The spglib dataset of `atoms`. @throws if the cell is not periodic or has no symmetry. */
 export function getSymmetryDataset(atoms: Atoms, options: SymmetryTolerances = {}): SymmetryDataset {
   const mod = requireSymmetry();
-  const raw: RawSymmetryDataset = mod.getSymmetryDataset(
-    atoms.rawHandle(),
-    options.symprec ?? 1e-5,
-    options.angleTolerance ?? -1,
-    options.useLabels ?? false,
+  const handle = atoms.rawHandle();
+  const raw: RawSymmetryDataset = native(() =>
+    mod.getSymmetryDataset(handle, options.symprec ?? 1e-5, options.angleTolerance ?? -1, options.useLabels ?? false),
   );
   return raw as SymmetryDataset;
 }
@@ -122,14 +120,19 @@ export function getSymmetryDataset(atoms: Atoms, options: SymmetryTolerances = {
 /** spglib's standardised cell (conventional by default, primitive with `toPrimitive`). */
 export function standardizeCell(atoms: Atoms, options: StandardizeOptions = {}): Atoms {
   const mod = requireSymmetry();
+  const handle = atoms.rawHandle();
   return new Atoms(
-    mod.standardizeCell(
-      atoms.rawHandle(),
-      options.toPrimitive ?? false,
-      options.noIdealize ?? false,
-      options.symprec ?? 1e-5,
-      options.angleTolerance ?? -1,
-      options.useLabels ?? false,
+    native(
+      () =>
+        mod.standardizeCell(
+          handle,
+          options.toPrimitive ?? false,
+          options.noIdealize ?? false,
+          options.symprec ?? 1e-5,
+          options.angleTolerance ?? -1,
+          options.useLabels ?? false,
+        ),
+      discardRaw,
     ),
   );
 }
@@ -137,12 +140,12 @@ export function standardizeCell(atoms: Atoms, options: StandardizeOptions = {}):
 /** The primitive cell, idealised. */
 export function findPrimitive(atoms: Atoms, options: SymmetryTolerances = {}): Atoms {
   const mod = requireSymmetry();
+  const handle = atoms.rawHandle();
   return new Atoms(
-    mod.findPrimitive(
-      atoms.rawHandle(),
-      options.symprec ?? 1e-5,
-      options.angleTolerance ?? -1,
-      options.useLabels ?? false,
+    native(
+      () =>
+        mod.findPrimitive(handle, options.symprec ?? 1e-5, options.angleTolerance ?? -1, options.useLabels ?? false),
+      discardRaw,
     ),
   );
 }
@@ -150,5 +153,6 @@ export function findPrimitive(atoms: Atoms, options: SymmetryTolerances = {}): A
 /** The Niggli-reduced cell of the same lattice. Positions stay Cartesian. */
 export function niggliReduce(atoms: Atoms, options: { symprec?: number } = {}): Atoms {
   const mod = requireSymmetry();
-  return new Atoms(mod.niggliReduce(atoms.rawHandle(), options.symprec ?? 1e-5));
+  const handle = atoms.rawHandle();
+  return new Atoms(native(() => mod.niggliReduce(handle, options.symprec ?? 1e-5), discardRaw));
 }

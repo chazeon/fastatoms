@@ -22,12 +22,11 @@ name = "fastatoms"
 version = "0.3.0"
 description = "Test-only pybind11 bindings for the fastatoms C++ core (not for PyPI)"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["numpy>=1.26"]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "numpy>=1.26",
     "ase>=3.23",
     "vesin>=0.4",
     "spglib>=2.5",

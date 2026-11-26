@@ -50,3 +50,20 @@ export function requireModule(): RawModule {
   }
   return loaded;
 }
+
+/**
+ * Run one native call and raise the C++ error it recorded, if any. The wasm
+ * side never throws into JS (a throw from a C++ catch block corrupts the
+ * module), so the error is taken here, after the call has returned. On error
+ * `discard` releases the placeholder handle the call returned, and the call
+ * throws the message as an Error.
+ */
+export function native<T>(call: () => T, discard?: (value: T) => void): T {
+  const result = call();
+  const message = requireModule().takeError();
+  if (message !== "") {
+    discard?.(result);
+    throw new Error(message);
+  }
+  return result;
+}

@@ -193,6 +193,33 @@ def test_format_guessed_from_content_for_nameless_file_object() -> None:
     assert list(atoms.arrays["id"]) == [1, 2, 3]
 
 
+def test_unnamed_xyz_stream_is_guessed_from_content() -> None:
+    atoms = fastatoms.io.read(stdio.StringIO("1\n\nH 0 0 0\n"))
+    assert list(atoms.symbols) == ["H"]
+    raw = stdio.BytesIO(b"1\n\nH 0 0 0\n")
+    assert list(fastatoms.io.read(raw).symbols) == ["H"]
+
+
+def test_content_signature_beats_xyz_extension(tmp_path: Path) -> None:
+    text = (DATA / "lammps" / "unsorted_ids.lammpstrj").read_text()
+    path = tmp_path / "traj.xyz"
+    path.write_text(text)
+    assert fastatoms._core.guess_format("traj.xyz", text[:4096]) == "lammps-dump"
+    atoms = fastatoms.io.read(path)
+    assert "id" in atoms.arrays
+
+
+# --- Latin-1 CIF -----------------------------------------------------------------
+
+
+def test_latin1_cif_bytes_are_read() -> None:
+    body = "# café\n" + (DATA / "cif" / "nacl.cif").read_text(encoding="utf-8")
+    raw = body.encode("latin-1")
+    atoms = fastatoms.io.read(stdio.BytesIO(raw), format="cif")
+    assert len(atoms) > 0
+    assert len(fastatoms.io.read_string(raw, "cif")) == len(atoms)
+
+
 def test_unknown_format_names_the_file(tmp_path: Path) -> None:
     path = tmp_path / "mystery.abc"
     path.write_text("hello world\n")
@@ -208,6 +235,47 @@ def test_iread_yields_the_selected_frames(traj: Path) -> None:
     assert _zs(frames) == [0.0, 2.0, 4.0]
     single = list(fastatoms.io.iread(traj, index=-1))
     assert len(single) == 1 and single[0].positions[0, 2] == pytest.approx(5.0)
+
+
+def test_iread_without_index_yields_every_frame(traj: Path) -> None:
+    assert _zs(list(fastatoms.io.iread(traj))) == [float(i) for i in range(6)]
+    assert len(list(ase_io.iread(traj))) == 6
+
+
+def test_iread_two_frame_stream_yields_both_frames() -> None:
+    frames = list(fastatoms.io.iread(stdio.StringIO(_multi_extxyz(2)), format="extxyz"))
+    assert _zs(frames) == [0.0, 1.0]
+
+
+# --- filename index suffix (traj.xyz@::2) ----------------------------------------
+
+
+def test_at_sign_slice_suffix_selects_frames(traj: Path) -> None:
+    frames = fastatoms.io.read(f"{traj}@::2")
+    assert _zs(frames) == [0.0, 2.0, 4.0]
+    assert _zs(list(fastatoms.io.iread(f"{traj}@::2"))) == [0.0, 2.0, 4.0]
+
+
+def test_at_sign_int_suffix_selects_one_frame(traj: Path) -> None:
+    atoms = fastatoms.io.read(f"{traj}@2")
+    assert isinstance(atoms, fastatoms.Atoms)
+    assert atoms.positions[0, 2] == pytest.approx(2.0)
+
+
+def test_at_sign_explicit_slice_wins_over_suffix(traj: Path) -> None:
+    assert _zs(fastatoms.io.read(f"{traj}@0", index=":2")) == [0.0, 1.0]
+
+
+def test_do_not_split_by_at_sign_keeps_the_whole_name(traj: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        fastatoms.io.read(f"{traj}@::2", do_not_split_by_at_sign=True)
+
+
+def test_at_sign_that_is_not_an_index_stays_in_the_name(tmp_path: Path) -> None:
+    path = tmp_path / "run@v2.extxyz"
+    path.write_text(_multi_extxyz(1))
+    atoms = fastatoms.io.read(path)
+    assert isinstance(atoms, fastatoms.Atoms) and len(atoms) == 2
 
 
 # --- write ---------------------------------------------------------------------
@@ -240,9 +308,34 @@ def test_write_list_to_single_frame_format_raises(tmp_path: Path) -> None:
         fastatoms.io.write(tmp_path / "POSCAR", [_cell_atoms(), _cell_atoms()], format="vasp")
 
 
-def test_write_list_to_cif_raises(tmp_path: Path) -> None:
-    with pytest.raises(ValueError):
-        fastatoms.io.write(tmp_path / "x.cif", [_cell_atoms(), _cell_atoms()])
+def _shifted_atoms(dz: float) -> Any:
+    atoms = _cell_atoms()
+    atoms.positions = atoms.positions + np.array([0.0, 0.0, dz])
+    return atoms
+
+
+def test_write_two_cif_frames_reads_back_and_matches_ase(tmp_path: Path) -> None:
+    path = tmp_path / "two.cif"
+    fastatoms.io.write(path, [_cell_atoms(), _shifted_atoms(0.5)])
+    assert path.read_text().count("data_") == 2
+
+    frames = fastatoms.io.read(path, index=slice(None))
+    assert len(frames) == 2
+    assert frames[1].positions[1, 2] == pytest.approx(1.5, abs=1e-5)
+
+    ase_frames = ase_io.read(path, index=":", format="cif")
+    assert len(ase_frames) == 2
+
+
+def test_write_string_list_for_cif_has_one_block_per_frame() -> None:
+    text = fastatoms.io.write_string([_cell_atoms(), _shifted_atoms(0.5)], "cif")
+    assert text.count("data_") == 2
+    assert len(fastatoms.io.read_string(text, "cif", index=":")) == 2
+
+
+def test_write_cif_list_of_one_is_a_single_block(tmp_path: Path) -> None:
+    text = fastatoms.io.write_string([_cell_atoms()], "cif")
+    assert text.count("data_") == 1
 
 
 def test_write_to_text_file_object_uses_the_given_format() -> None:
@@ -313,7 +406,7 @@ def test_read_all_frames_matches_ase(fmt: str, ase_fmt: str, path: Path) -> None
     if len(ase_frames) < 2:
         pytest.skip("single structure: no multi-frame parity to check")
 
-    ours = fastatoms.io.read(path, index=":", format=fmt)
+    ours = fastatoms.io.read(path, index=slice(None), format=fmt)
     assert len(ours) == len(ase_frames)
     atol = CIF_POSITION_ATOL if fmt == "cif" else 1e-6
     for mine, theirs in zip(ours, ase_frames, strict=False):
@@ -328,7 +421,7 @@ def test_gemmy_extxyz_frames_match_ase(tmp_path: Path) -> None:
     if not paths:
         pytest.skip("no small gemmy extxyz files")
     path = paths[0]
-    ours = fastatoms.io.read(path, index=":")
+    ours = fastatoms.io.read(path, index=slice(None))
     theirs = ase_io.read(path, index=":")
     assert len(ours) == len(theirs)
     for mine, ref in zip(ours, theirs, strict=False):

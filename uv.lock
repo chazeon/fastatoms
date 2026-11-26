@@ -365,14 +365,16 @@ wheels = [
 name = "fastatoms"
 version = "0.3.0"
 source = { editable = "." }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "ase" },
     { name = "mypy" },
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
-    { name = "numpy", version = "2.5.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pybind11-stubgen" },
     { name = "pytest" },
     { name = "ruff" },
@@ -382,12 +384,12 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=1.26" }]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "ase", specifier = ">=3.23" },
     { name = "mypy", specifier = ">=1.10" },
-    { name = "numpy", specifier = ">=1.26" },
     { name = "pybind11-stubgen", specifier = ">=2.5" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },

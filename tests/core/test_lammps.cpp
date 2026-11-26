@@ -140,6 +140,41 @@ FA_TEST(mass_only_infers_elements) {
     FA_CHECK(t == std::vector<std::int64_t>({1, 2, 1, 2, 2, 1}));
 }
 
+FA_TEST(mass_units_scale_element_inference) {
+    // One atom of type 1 whose stated mass is the hydrogen mass in each unit style.
+    const auto data = [](const char* mass) {
+        return std::string("title\n\n1 atoms\n1 atom types\n\n0 5 xlo xhi\n0 5 ylo yhi\n"
+                           "0 5 zlo zhi\n\nMasses\n\n1 ") +
+               mass + "\n\nAtoms # atomic\n\n1 1 0 0 0\n";
+    };
+    const struct {
+        const char* units;
+        const char* mass;
+    } cases[] = {
+        {"si", "1.6737236e-27"},   {"cgs", "1.6737236e-24"}, {"electron", "1.00794"},
+        {"metal", "1.00794"},      {"real", "1.00794"},      {"micro", "1.6737236e-12"},
+        {"nano", "1.6737236e-6"},
+    };
+    for (const auto& c : cases) {
+        LammpsDataReadOptions options;
+        options.units = c.units;
+        const Atoms atoms = read_lammps_data(data(c.mass), options);
+        FA_CHECK(atoms.numbers() == std::vector<int>({1}));
+        // Raw masses are kept as written.
+        FA_CHECK_CLOSE(atoms.mass(0), std::stod(c.mass), 1e-12);
+    }
+    // Without the scale the same si mass matches no element.
+    const Atoms unscaled = read_lammps_data(data("1.6737236e-27"));
+    FA_CHECK(unscaled.numbers() == std::vector<int>({0}));
+    // lj has no mass scale, so masses never name an element.
+    LammpsDataReadOptions lj;
+    lj.units = "lj";
+    FA_CHECK(read_lammps_data(data("1.00794"), lj).numbers() == std::vector<int>({0}));
+    LammpsDataReadOptions bad;
+    bad.units = "furlongs";
+    FA_CHECK_THROWS(read_lammps_data(data("1.0"), bad), FormatError);
+}
+
 FA_TEST(mass_without_match_is_dummy_x) {
     // No element has mass 100 and there is no comment: the type is unresolved,
     // so it becomes the dummy X labelled by its number.

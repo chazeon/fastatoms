@@ -14,7 +14,7 @@
 
 import { Atoms } from "./atoms.js";
 import * as io from "./io.js";
-import { init, requireModule } from "./module.js";
+import { init, native, requireModule } from "./module.js";
 import type { EmscriptenFactory, NeighborKey } from "./raw.js";
 
 export { init, Atoms, io };
@@ -138,5 +138,7 @@ export function neighborList<Q extends string>(
       throw new Error(`neighborList: unknown quantity '${letter}' (use letters from i, j, S, d, D)`);
     }
   }
-  return module.neighborList(atoms.rawHandle(), cutoff, options.full ?? true, quantities) as NeighborResult<Q>;
+  const handle = atoms.rawHandle();
+  const full = options.full ?? true;
+  return native(() => module.neighborList?.(handle, cutoff, full, quantities)) as NeighborResult<Q>;
 }

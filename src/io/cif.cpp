@@ -629,4 +629,22 @@ std::string write_cif(const Atoms& atoms) {
     return out;
 }
 
+std::string write_cif(const std::vector<Atoms>& frames) {
+    if (frames.size() == 1) {
+        return write_cif(frames.front());
+    }
+    std::string out;
+    for (std::size_t k = 0; k < frames.size(); ++k) {
+        std::string block = write_cif(frames[k]);
+        // The single-frame writer names the block after the formula; make it
+        // unique by appending the frame number to that first line.
+        block.insert(block.find('\n'), "_" + std::to_string(k + 1));
+        out += block;
+        if (k + 1 < frames.size()) {
+            out += '\n';
+        }
+    }
+    return out;
+}
+
 }  // namespace fastatoms::io

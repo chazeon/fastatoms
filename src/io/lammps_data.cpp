@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -110,6 +111,46 @@ TypeInfo unresolved_type(std::int64_t type) {
     return {std::to_string(type), kDummyAtomicNumber};
 }
 
+/// Amu per unit of mass in the LAMMPS unit style `units`. Masses in real and
+/// metal are g/mol and in electron are amu; si is kg, cgs g, micro pg and nano
+/// ag. lj has no mass scale, so 0 is returned and mass inference is disabled.
+double amu_per_mass_unit(std::string units) {
+    std::transform(units.begin(), units.end(), units.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    constexpr double kKilogramPerAmu = 1.66053906660e-27;
+    if (units == "real" || units == "metal" || units == "electron") {
+        return 1.0;
+    }
+    if (units == "si") {
+        return 1.0 / kKilogramPerAmu;
+    }
+    if (units == "cgs") {
+        return 1e-3 / kKilogramPerAmu;  // grams
+    }
+    if (units == "micro") {
+        return 1e-15 / kKilogramPerAmu;  // picograms
+    }
+    if (units == "nano") {
+        return 1e-21 / kKilogramPerAmu;  // attograms
+    }
+    if (units == "lj") {
+        return 0.0;
+    }
+    throw FormatError("LAMMPS data: unknown units '" + units + "'");
+}
+
+/// Element of a stated mass (in the file's units), or -1. Inference is off when
+/// the unit style has no mass scale (scale 0).
+int mass_element(double mass, double scale) {
+    return scale > 0.0 ? element_from_mass(mass * scale) : -1;
+}
+
+/// Whether a stated mass agrees with element `z`. With no mass scale, the
+/// label is trusted.
+bool mass_matches(int z, double mass, double scale) {
+    return scale <= 0.0 || mass_agrees(z, mass * scale);
+}
+
 /// Label and element of one LAMMPS atom type. Priority: explicit `types`, then
 /// the Atom Type Labels section, then the Masses comment, then the mass. A
 /// type that none of these resolve becomes the dummy X labelled by its number.
@@ -125,7 +166,7 @@ TypeInfo unresolved_type(std::int64_t type) {
 /// matched symbol.
 TypeInfo resolve_type(std::int64_t type, std::size_t line, const LammpsTypeMap& types,
                       const std::map<std::int64_t, std::string>& type_labels,
-                      const std::map<std::int64_t, MassRecord>& masses) {
+                      const std::map<std::int64_t, MassRecord>& masses, double scale) {
     if (const auto it = types.find(static_cast<int>(type)); it != types.end()) {
         return {it->second, element_of_label(it->second, line)};
     }
@@ -137,7 +178,7 @@ TypeInfo resolve_type(std::int64_t type, std::size_t line, const LammpsTypeMap& 
         if (z >= 0) {
             return {it->second, z};
         }
-        const int zm = mass != nullptr ? element_from_mass(mass->mass) : -1;
+        const int zm = mass != nullptr ? mass_element(mass->mass, scale) : -1;
         if (zm >= 0) {
             return {it->second, zm};
         }
@@ -159,16 +200,20 @@ TypeInfo resolve_type(std::int64_t type, std::size_t line, const LammpsTypeMap& 
             return {word, ze};
         }
     }
-    if (zl >= 0 && mass_agrees(zl, mass->mass)) {
+    if (zl >= 0 && mass_matches(zl, mass->mass, scale)) {
         return {word, zl};
     }
-    const int zm = element_from_mass(mass->mass);
+    const int zm = mass_element(mass->mass, scale);
     if (zm >= 0) {
         return {std::string(symbol_from_number(zm)), zm};
     }
-    if (zl >= 0) {
+    if (zl == 0) {
+        // "X"-style comments name the dummy element on purpose: no conflict.
+        return {word, 0};
+    }
+    if (zl > 0) {
         line_error(line, "Masses comment names element '" + word + "' but no element has a mass " +
-                             "near " + format_double(mass->mass) + " (atom type " +
+                             "near " + format_double(mass->mass * scale) + " (atom type " +
                              std::to_string(type) + "); give 'types' explicitly");
     }
     return unresolved_type(type);
@@ -177,6 +222,7 @@ TypeInfo resolve_type(std::int64_t type, std::size_t line, const LammpsTypeMap& 
 }  // namespace
 
 Atoms read_lammps_data(std::string_view text, const LammpsDataReadOptions& options) {
+    const double amu_scale = amu_per_mass_unit(options.units);
     text = strip_bom(text);
     if (text.empty()) {
         throw FormatError("empty LAMMPS data file");
@@ -448,7 +494,7 @@ Atoms read_lammps_data(std::string_view text, const LammpsDataReadOptions& optio
         if (it == type_info.end()) {
             it = type_info
                      .emplace(r.type, resolve_type(r.type, r.line, options.types, type_labels,
-                                                   masses))
+                                                   masses, amu_scale))
                      .first;
         }
         numbers[i] = it->second.number;

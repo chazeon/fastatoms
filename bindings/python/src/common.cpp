@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: MIT
 #include "common.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace fastatoms::bindings {
 
-Value value_from_py(const py::handle& obj) {
+namespace {
+
+/// Nesting limit for metadata. Deeper structures (or cycles) are rejected
+/// instead of recursing until the C stack overflows.
+constexpr std::size_t kMaxValueDepth = 256;
+
+/// `path` holds the containers being converted above `obj`. An object that is
+/// already on the path is a cycle: the conversion would never end.
+Value value_from_py_nested(const py::handle& obj, std::vector<const PyObject*>& path) {
     if (!obj || obj.is_none()) {
         return Value{};
     }
@@ -22,25 +31,48 @@ Value value_from_py(const py::handle& obj) {
     if (py::isinstance<py::str>(obj)) {
         return Value(obj.cast<std::string>());
     }
-    if (py::isinstance<py::dict>(obj)) {
-        Value::Map items;
-        for (auto kv : py::reinterpret_borrow<py::dict>(obj)) {
-            if (!py::isinstance<py::str>(kv.first)) {
-                throw py::type_error("fastatoms values need string keys");
+    const bool is_dict = py::isinstance<py::dict>(obj);
+    const bool is_seq = py::isinstance<py::list>(obj) || py::isinstance<py::tuple>(obj);
+    if (is_dict || is_seq) {
+        const PyObject* id = obj.ptr();
+        if (std::find(path.begin(), path.end(), id) != path.end()) {
+            throw py::value_error("metadata contains a reference cycle (an object that contains itself); "
+                                  "fastatoms values must be trees");
+        }
+        if (path.size() >= kMaxValueDepth) {
+            throw py::value_error("metadata is nested more than " + std::to_string(kMaxValueDepth) +
+                                  " levels deep");
+        }
+        path.push_back(id);
+        Value result;
+        if (is_dict) {
+            Value::Map items;
+            for (auto kv : py::reinterpret_borrow<py::dict>(obj)) {
+                if (!py::isinstance<py::str>(kv.first)) {
+                    throw py::type_error("fastatoms values need string keys");
+                }
+                items.emplace_back(kv.first.cast<std::string>(), value_from_py_nested(kv.second, path));
             }
-            items.emplace_back(kv.first.cast<std::string>(), value_from_py(kv.second));
+            result = Value(std::move(items));
+        } else {
+            Value::List items;
+            for (auto item : py::reinterpret_borrow<py::iterable>(obj)) {
+                items.push_back(value_from_py_nested(item, path));
+            }
+            result = Value(std::move(items));
         }
-        return Value(std::move(items));
-    }
-    if (py::isinstance<py::list>(obj) || py::isinstance<py::tuple>(obj)) {
-        Value::List items;
-        for (auto item : py::reinterpret_borrow<py::iterable>(obj)) {
-            items.push_back(value_from_py(item));
-        }
-        return Value(std::move(items));
+        path.pop_back();
+        return result;
     }
     throw py::type_error("cannot convert this Python object to a fastatoms value; "
                          "use None, bool, int, float, str, list or dict");
+}
+
+}  // namespace
+
+Value value_from_py(const py::handle& obj) {
+    std::vector<const PyObject*> path;
+    return value_from_py_nested(obj, path);
 }
 
 py::object value_to_py(const Value& value) {

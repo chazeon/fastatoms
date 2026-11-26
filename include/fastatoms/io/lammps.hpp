@@ -40,6 +40,11 @@ struct LammpsDataReadOptions {
                                 ///< guessed from the field count (as ASE)
     LammpsTypeMap types{};      ///< "types"
     bool unwrap{false};         ///< "unwrap": apply image flags to positions
+    std::string units{"metal"}; ///< "units": the LAMMPS unit style of the file's masses,
+                                ///< used only to infer elements from masses (raw masses
+                                ///< are kept as written). lj has no mass scale, so it
+                                ///< disables mass inference. Others: real, metal, si,
+                                ///< cgs, electron, micro, nano.
 };
 
 struct LammpsDataWriteOptions {

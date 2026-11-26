@@ -43,6 +43,12 @@ export interface RawModule {
   guessFormat(filename: string, head: string): string;
   availableFormats(): string[];
   canWrite(format: string): boolean;
+  /** Whether `format` holds more than one frame (xyz, extxyz, cif). */
+  canWriteFrames(format: string): boolean;
+  /** Several frames as one text (multi-frame formats only). */
+  writeAll(frames: RawAtoms[], format: string, optionsJSON: string): string;
+  /** The message of the last failed native call, "" when none. Clears it. */
+  takeError(): string;
   fromArrays(
     numbersOrSymbols: ArrayLike<number> | ArrayLike<string>,
     positions: ArrayLike<number>,

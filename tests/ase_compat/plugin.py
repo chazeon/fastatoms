@@ -153,14 +153,33 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         items[:] = kept
 
 
-@pytest.hookimpl(wrapper=True)
-def pytest_runtest_call(item: pytest.Item):
+def _record_phase(item: pytest.Item):
+    """Collect the adapter calls made in one phase (setup, call or teardown).
+
+    Hits from every phase are kept, so a test whose fixtures write or read a file
+    through fastatoms is not counted as bypassing fastatoms.
+    """
     adapters.CALLS.clear()
     try:
         return (yield)
     finally:
-        _adapter_hits[item.nodeid] = list(adapters.CALLS)
+        _adapter_hits.setdefault(item.nodeid, []).extend(adapters.CALLS)
         adapters.CALLS.clear()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_setup(item: pytest.Item):
+    return (yield from _record_phase(item))
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item):
+    return (yield from _record_phase(item))
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item: pytest.Item):
+    return (yield from _record_phase(item))
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:

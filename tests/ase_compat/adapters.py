@@ -88,6 +88,29 @@ def _to_ase(frame: Any) -> Any:
     return atoms
 
 
+# ASE calls the per-atom molecule number "mol-id"; fastatoms calls it "mol".
+_MOL_FA_TO_ASE = {"mol": "mol-id"}
+
+
+def _mol_to_ase(atoms: Any) -> Any:
+    """Rename fastatoms' ``mol`` to ASE's ``mol-id``. Like ASE's reader, drop it when
+    every atom is in molecule 0."""
+    if "mol" in atoms.arrays:
+        mol = atoms.arrays.pop("mol")
+        if np.any(np.asarray(mol) != 0):
+            atoms.arrays["mol-id"] = np.asarray(mol)
+    return atoms
+
+
+def _mol_to_fa(atoms: Any) -> Any:
+    """Rename ASE's ``mol-id`` to fastatoms' ``mol`` on a copy of ``atoms``."""
+    if "mol-id" not in atoms.arrays:
+        return atoms
+    work = atoms.copy()
+    work.arrays["mol"] = np.asarray(work.arrays.pop("mol-id"), dtype=np.int64)
+    return work
+
+
 def _convert_frames(result: Any) -> Any:
     """Turn fastatoms' result (one frame or a list) into ASE's Atoms or list."""
     if isinstance(result, list):
@@ -395,10 +418,9 @@ def write_cif(
         raise _unsupported("CIF writer", "loop_keys", loop_keys)
     if not wrap:
         raise _unsupported("CIF writer", "wrap", wrap)
-    images = _as_list(images)
-    if len(images) > 1:
-        raise _unsupported("CIF writer", "multiple images (one data block per Atoms)")
-    _emit(fd, faio.write_string(_to_fa(images[0]), "cif"))
+    frames = [_to_fa(atoms) for atoms in _as_list(images)]
+    # One data block per structure; a single structure is written as before.
+    faio.write(fd, frames if len(frames) > 1 else frames[0], format="cif")
 
 
 # -- LAMMPS data -----------------------------------------------------------------------
@@ -435,20 +457,22 @@ def read_lammps_data(
     * ``read_image_flags=True`` (ASE default): fastatoms' ``unwrap``.
     * ``units``: positions, cell, masses and velocities are converted from the
       LAMMPS unit system to ASE units with ASE's conversion table. fastatoms
-      keeps values in the file's units.
+      keeps values in the file's units. The same name is also passed to
+      fastatoms, which uses it to infer elements from the stated masses.
+    * ``mol`` <-> ``mol-id``: the molecule column is exposed under ASE's name.
     """
     from ase.data import chemical_symbols
 
     CALLS.append("read_lammps_data")
     if style is not None:
         atom_style = style
-    options: dict[str, Any] = {"unwrap": bool(read_image_flags)}
+    options: dict[str, Any] = {"unwrap": bool(read_image_flags), "units": units}
     if atom_style:
         options["atom_style"] = atom_style
     if Z_of_type:
         options["types"] = {str(int(t)): chemical_symbols[int(z)] for t, z in Z_of_type.items()}
     frame = _read(fileobj, "lammps-data", None, **options)
-    atoms = _to_ase(frame)
+    atoms = _mol_to_ase(_to_ase(frame))
 
     if sort_by_id and "id" in atoms.arrays:
         atoms = atoms[np.argsort(np.asarray(atoms.arrays["id"]), kind="stable")]
@@ -512,7 +536,7 @@ def write_lammps_data(
     if specorder is None and "type" not in atoms.arrays:
         # ASE numbers the types in alphabetical order of the element symbols.
         specorder = sorted(set(atoms.get_chemical_symbols()))
-    frame = _to_fa(work)
+    frame = _to_fa(_mol_to_fa(work))
     options: dict[str, Any] = {
         "atom_style": atom_style,
         "masses": bool(masses),
@@ -526,14 +550,39 @@ def write_lammps_data(
 # -- LAMMPS dump --------------------------------------------------------------------------
 
 
-def read_lammps_dump_text(fd: Any, index: Any = -1, **kwargs: Any) -> Any:
-    """ase.io.lammpsrun.read_lammps_dump_text."""
+def _dump_units_to_ase(atoms: Any, units: str) -> Any:
+    """Convert a dump frame from LAMMPS ``units`` to ASE units, as ASE's reader does:
+    cell and positions (distance), and velocities.
+
+    ``to_ase`` sets ASE velocities from fastatoms' stored velocities, so dummy
+    (mass-0) atoms keep theirs.
+    """
+    if units == "ASE":
+        return atoms
+    atoms.set_cell(_lammps_convert(np.asarray(atoms.cell.array), "distance", units))
+    atoms.positions = _lammps_convert(atoms.positions, "distance", units)
+    if "momenta" in atoms.arrays:
+        velocities = atoms.get_velocities()
+        atoms.set_velocities(_lammps_convert(velocities, "velocity", units))
+    return atoms
+
+
+def read_lammps_dump_text(fd: Any, index: Any = -1, units: str = "metal", **kwargs: Any) -> Any:
+    """ase.io.lammpsrun.read_lammps_dump_text.
+
+    ``units`` (default "metal", as in ASE) converts the cell, positions and
+    velocities to ASE units, with ASE's table. Image flags are not applied (ASE's
+    default, and fastatoms' ``unwrap=False``).
+    """
     CALLS.append("read_lammps_dump_text")
     if kwargs:
         raise _unsupported("lammps-dump reader", ", ".join(sorted(kwargs)))
     # ASE takes positions as written and ignores the ix/iy/iz image flags, and
     # fastatoms' default (unwrap=False) does the same.
-    return _convert_frames(_read(fd, "lammps-dump", index))
+    frames = _convert_frames(_read(fd, "lammps-dump", index))
+    if isinstance(frames, list):
+        return [_dump_units_to_ase(frame, units) for frame in frames]
+    return _dump_units_to_ase(frames, units)
 
 
 # -- Registry table ---------------------------------------------------------------------

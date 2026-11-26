@@ -51,6 +51,15 @@ public:
 [[nodiscard]] std::string write(const Atoms& atoms, const std::string& format,
                                 const Value& options = {});
 
+/// Serialise several frames into one text: xyz/extxyz concatenate frames, cif
+/// writes one data block per frame. Other formats hold one structure, so more
+/// than one frame is a FormatError (one frame is the same as `write`).
+[[nodiscard]] std::string write_all(const std::vector<Atoms>& frames, const std::string& format,
+                                    const Value& options = {});
+
+/// Whether `format` can hold more than one frame when written.
+[[nodiscard]] bool can_write_frames(const std::string& format);
+
 /// Format from a file name (`POSCAR`, `CONTCAR`, `*.vasp`, `*.xyz`,
 /// `*.extxyz`, `*.cif`, `*.data`/`*.lmp`, `*.dump`/`*.lammpstrj`), falling
 /// back to sniffing the first bytes of `head`. Empty if unknown.

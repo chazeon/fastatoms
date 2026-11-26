@@ -171,3 +171,75 @@ test("io.write guesses the format from the filename, and needs one of the two", 
   assert.throws(() => io.write(atoms, { filename: "structure.unknown" }), /structure\.unknown|cannot determine/);
   assert.throws(() => io.write(atoms, { filename: "out.extxyz.gz" }), /gzip/);
 });
+
+/** A two-frame extxyz written by io.write, with frame k at x = k. */
+const LAMMPS_DUMP = [
+  "ITEM: TIMESTEP",
+  "42",
+  "ITEM: NUMBER OF ATOMS",
+  "1",
+  "ITEM: BOX BOUNDS pp pp pp",
+  "0 10",
+  "0 10",
+  "0 10",
+  "ITEM: ATOMS id type x y z",
+  "1 1 0 0 0",
+  "",
+].join("\n");
+
+test("format guess with no filename: plain XYZ text is read as xyz", { skip: !has("xyz") && !has("extxyz") }, () => {
+  const atoms = io.read("1\n\nH 0 0 0\n");
+  assert.equal(atoms.length, 1);
+  assert.deepEqual(atoms.getChemicalSymbols(), ["H"]);
+});
+
+test("format guess: a content signature beats the extension (LAMMPS dump named traj.xyz)", {
+  skip: !has("lammps-dump"),
+}, () => {
+  const atoms = io.read(LAMMPS_DUMP, { filename: "traj.xyz" });
+  assert.equal(atoms.length, 1);
+  assert.ok(
+    atoms.arrayInfo().some((info) => info.name === "id"),
+    "a LAMMPS dump has an id array",
+  );
+  assert.equal(atoms.info.timestep, 42);
+});
+
+test("index: null is the last frame, like undefined", { skip: !has("extxyz") }, () => {
+  const text = trajectory();
+  const last = io.read(text, { format: "extxyz", index: null });
+  assert.ok(last instanceof Atoms);
+  assert.deepEqual(xs([last]), [4]);
+});
+
+test("index: a malformed slice is an error before any frame is read", { skip: !has("extxyz") }, () => {
+  const text = trajectory();
+  for (const bad of ["::+", "+:", "1x:", "::-", ":-:", "1::2:3", "::0", "1:2:3:4", "--1:"]) {
+    assert.throws(() => io.read(text, { format: "extxyz", index: bad }), /index|step/, `index "${bad}"`);
+  }
+  assert.deepEqual(xs(io.read(text, { format: "extxyz", index: "+1:" })), [1, 2, 3, 4], "a signed start is fine");
+  assert.deepEqual(xs(io.read(text, { format: "extxyz", index: " 1 : 3 " })), [1, 2]);
+});
+
+test("io.write takes a list for cif: a 2-frame CIF reads back as 2 frames", {
+  skip: !has("cif"),
+}, () => {
+  const make = (a) =>
+    Atoms.fromArrays({
+      symbols: ["Na", "Cl"],
+      positions: [0, 0, 0, a / 2, a / 2, a / 2],
+      cell: [a, 0, 0, 0, a, 0, 0, 0, a],
+      pbc: true,
+    });
+  const frames = [make(5.64), make(5.9)];
+  const text = io.write(frames, { format: "cif" });
+  assert.equal((text.match(/^data_/gm) ?? []).length, 2, "one data block per frame");
+  frames.forEach((frame) => {
+    frame.dispose();
+  });
+
+  const back = io.read(text, { format: "cif", index: ":" });
+  assert.equal(back.length, 2);
+  const cells = back.map((atoms) => atoms.cell[0]);
+  assert.ok(Math.abs(cells[0] - 5.64) < 1e-6 && Math.abs(cells[1] - 5.9) < 1e-6, `cell lengths ${cells}`);
+});

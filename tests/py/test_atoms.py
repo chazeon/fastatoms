@@ -120,3 +120,53 @@ def test_from_ase_round_trip() -> None:
     back = atoms.to_ase()
     np.testing.assert_allclose(back.positions, original.positions)
     assert list(back.arrays["labels"]) == ["O1", "H", "H2"]
+
+
+# --- metadata conversion -------------------------------------------------------
+
+
+def test_cyclic_dict_metadata_raises_cleanly() -> None:
+    atoms = fastatoms.Atoms(numbers=[1], positions=[[0.0, 0.0, 0.0]])
+    cyclic: dict[str, Any] = {}
+    cyclic["self"] = cyclic
+    with pytest.raises(ValueError, match="cycle"):
+        atoms.info = cyclic
+
+
+def test_cyclic_list_metadata_raises_cleanly() -> None:
+    atoms = fastatoms.Atoms(numbers=[1], positions=[[0.0, 0.0, 0.0]])
+    cyclic: list[Any] = []
+    cyclic.append(cyclic)
+    with pytest.raises(ValueError, match="cycle"):
+        atoms.info = {"items": cyclic}
+
+
+def test_cycle_through_format_kwargs_raises_cleanly() -> None:
+    # Format keyword options use the same converter.
+    atoms = fastatoms.Atoms(numbers=[1], positions=[[0.0, 0.0, 0.0]])
+    cyclic: dict[str, Any] = {}
+    cyclic["self"] = cyclic
+    with pytest.raises(ValueError, match="cycle"):
+        fastatoms._core.write(atoms, "extxyz", meta=cyclic)
+
+
+def test_deep_metadata_raises_cleanly() -> None:
+    atoms = fastatoms.Atoms(numbers=[1], positions=[[0.0, 0.0, 0.0]])
+    deep: Any = 1.0
+    for _ in range(10_000):
+        deep = [deep]
+    with pytest.raises(ValueError, match="nested"):
+        atoms.info = {"deep": deep}
+
+
+def test_shared_but_acyclic_metadata_is_fine() -> None:
+    atoms = fastatoms.Atoms(numbers=[1], positions=[[0.0, 0.0, 0.0]])
+    shared = [1, 2]
+    atoms.info = {"a": shared, "b": shared}
+    assert atoms.info == {"a": [1, 2], "b": [1, 2]}
+
+
+def test_arrays_is_read_only() -> None:
+    atoms = fastatoms.Atoms(numbers=[1], positions=[[0.0, 0.0, 0.0]])
+    with pytest.raises(AttributeError):
+        atoms.arrays = {}  # type: ignore[misc]

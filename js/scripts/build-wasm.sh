@@ -115,25 +115,44 @@ emcmake cmake -S "$REPO" -B "$BUILD_DIR" -G Ninja \
     -DFASTATOMS_BUILD_TESTS=OFF \
     -DFASTATOMS_BUILD_WASM=ON \
     -DCMAKE_BUILD_TYPE=MinSizeRel \
+    -DFASTATOMS_WASM_SINGLE_FILE=OFF \
     ${FEATURES[@]+"${FEATURES[@]}"} \
     ${DEPS[@]+"${DEPS[@]}"} \
     ${EXTRA[@]+"${EXTRA[@]}"}
 
 cmake --build "$BUILD_DIR" --target fastatoms_wasm --parallel
 
+# The build tree is reused between runs, so a fastatoms.wasm from an earlier
+# two-file build can still sit in it. Decide what to package from the option
+# CMake resolved for this tree, not from which files happen to exist.
+SINGLE_FILE_RAW=$(sed -n 's/^FASTATOMS_WASM_SINGLE_FILE:[A-Za-z]*=//p' "$BUILD_DIR/CMakeCache.txt" | head -n 1)
+case "$(printf '%s' "$SINGLE_FILE_RAW" | tr '[:lower:]' '[:upper:]')" in
+    ON|TRUE|YES|1) SINGLE_FILE=1 ;;
+    OFF|FALSE|NO|0|"") SINGLE_FILE=0 ;;
+    *)
+        echo "build-wasm.sh: cannot read FASTATOMS_WASM_SINGLE_FILE from $BUILD_DIR/CMakeCache.txt" >&2
+        exit 1
+        ;;
+esac
+
 OUT_DIR="$JS_DIR/dist/wasm"
+rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 cp "$BUILD_DIR/fastatoms.mjs" "$OUT_DIR/"
 cp "$JS_DIR/src/wasm/fastatoms.d.mts" "$OUT_DIR/"
 SIZE_NOTE=""
-if [[ -f "$BUILD_DIR/fastatoms.wasm" ]]; then
+if [[ "$SINGLE_FILE" == 1 ]]; then
+    SIZE_NOTE="single-file build: no separate fastatoms.wasm"
+else
+    if [[ ! -f "$BUILD_DIR/fastatoms.wasm" ]]; then
+        echo "build-wasm.sh: expected $BUILD_DIR/fastatoms.wasm for a two-file build" >&2
+        exit 1
+    fi
     cp "$BUILD_DIR/fastatoms.wasm" "$OUT_DIR/"
     WASM="$OUT_DIR/fastatoms.wasm"
     RAW=$(wc -c < "$WASM" | tr -d ' ')
     GZ=$(gzip -9c "$WASM" | wc -c | tr -d ' ')
     SIZE_NOTE="fastatoms.wasm: $RAW bytes ($(( (RAW + 512) / 1024 )) KiB), gzip -9: $GZ bytes"
-else
-    SIZE_NOTE="single-file build: no separate fastatoms.wasm"
 fi
 
 echo "build-wasm.sh: copied to $OUT_DIR"

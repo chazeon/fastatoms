@@ -50,7 +50,7 @@ After editing C++ sources, rebuild with `uv sync --reinstall-package fastatoms`.
 uv keys its build cache on `pyproject.toml`, so a plain `uv sync` does not pick
 up C++ edits.
 
-The dev group holds pytest, numpy, ase, vesin and spglib. vesin is used only as a
+numpy is a runtime dependency (the package imports it). The dev group holds pytest, ase, vesin and spglib. vesin is used only as a
 neighbour-list reference and spglib only as the symmetry reference.
 
 Check everything in one go with `scripts/check-python.sh`. It runs

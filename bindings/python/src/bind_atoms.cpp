@@ -207,6 +207,13 @@ void bind_atoms(py::module_& m) {
                 a.set_masses(as_flat<double>(obj, static_cast<Index>(a.size()), 1, "masses"));
             })
         .def_property(
+            "velocities",
+            [](const Atoms& a) { return vec3s_to_py(a.velocities(), static_cast<Index>(a.size())); },
+            [](Atoms& a, const py::object& obj) {
+                a.set_velocities(as_flat<double>(obj, static_cast<Index>(a.size()), 3, "velocities"));
+            },
+            "(N, 3) velocities as stored, in the file's units (exact; survives mass-0 atoms)")
+        .def_property(
             "momenta", [](const Atoms& a) { return vec3s_to_py(a.momenta(), static_cast<Index>(a.size())); },
             [](Atoms& a, const py::object& obj) {
                 a.set_momenta(as_flat<double>(obj, static_cast<Index>(a.size()), 3, "momenta"));

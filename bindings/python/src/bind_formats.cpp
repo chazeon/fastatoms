@@ -34,6 +34,18 @@ void bind_formats(py::module_& m) {
         py::arg("atoms"), py::arg("format"), "Serialise one structure to a string.");
 
     m.def(
+        "write_all",
+        [](const std::vector<Atoms>& frames, const std::string& format, const py::kwargs& kwargs) {
+            return io::write_all(frames, format, options_from_kwargs(kwargs));
+        },
+        py::arg("frames"), py::arg("format"),
+        "Serialise several structures to one text (one block or frame each). Formats that hold "
+        "one structure accept a single frame only.");
+
+    m.def("can_write_frames", &io::can_write_frames, py::arg("format"),
+          "Whether `format` can hold more than one frame when written.");
+
+    m.def(
         "guess_format",
         [](const std::string& filename, const std::string& head) {
             return io::guess_format(filename, head);

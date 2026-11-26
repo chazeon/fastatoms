@@ -48,6 +48,46 @@ FA_TEST(guess_format_from_names) {
     FA_CHECK(guess_format("README.md").empty());
 }
 
+FA_TEST(guess_format_content_and_precedence) {
+    const auto available = available_formats();
+    const auto have = [&](const char* f) {
+        return std::find(available.begin(), available.end(), f) != available.end();
+    };
+    const std::string dump = "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n1\n";
+    const std::string cif = "data_x\n_cell_length_a 5.0\n";
+    const std::string xyz = "1\n\nH 0 0 0\n";
+    // No name, no extension: an XYZ atom count followed by an atom row.
+    if (have("extxyz")) {
+        FA_CHECK(guess_format("", xyz) == "extxyz");
+        FA_CHECK(guess_format("", "2\n# c\n  H 0 0 0 1\n") == "extxyz");
+        // An unknown label, or a non-numeric coordinate, is not XYZ.
+        FA_CHECK(guess_format("", "1\n\nQq 0 0 0\n").empty());
+        FA_CHECK(guess_format("", "1\n\nH 0 x 0\n").empty());
+        // A named file with an unknown extension is not sniffed, as in ASE.
+        FA_CHECK(guess_format("notes.txt", xyz).empty());
+        FA_CHECK(guess_format("traj.xyz", xyz) == "extxyz");
+        FA_CHECK(guess_format("traj.xyz.gz", "") == "extxyz");
+    }
+    // Strong content signatures win over the extension.
+    if (have("lammps-dump")) {
+        FA_CHECK(guess_format("traj.xyz", dump) == "lammps-dump");
+        FA_CHECK(guess_format("dump.1000", "") == "lammps-dump");
+    }
+    if (have("cif")) {
+        FA_CHECK(guess_format("foo.txt", cif) == "cif");
+        FA_CHECK(guess_format("", cif) == "cif");
+    }
+    // Special file names come before any content check.
+    if (have("vasp")) {
+        FA_CHECK(guess_format("POSCAR", dump) == "vasp");
+        FA_CHECK(guess_format("POSCAR", "") == "vasp");
+        FA_CHECK(guess_format("CONTCAR", xyz) == "vasp");
+    }
+    // Input that matches nothing.
+    FA_CHECK(guess_format("", "hello world\n").empty());
+    FA_CHECK(guess_format("", "").empty());
+}
+
 FA_TEST(unknown_format_is_an_error) {
     FA_CHECK_THROWS(read_all("", "pdb"), FormatError);
     FA_CHECK(!can_write("pdb"));
@@ -118,6 +158,33 @@ FA_TEST(lammps_type_keys_must_be_whole_integers) {
     FA_CHECK_THROWS(read_all("", "lammps-dump", with_types("99999999999999999999")),
                     FormatError);
     FA_CHECK_THROWS(read_all("", "lammps-data", with_types("2x")), FormatError);
+}
+
+FA_TEST(write_all_frames) {
+    const auto available = available_formats();
+    const auto have = [&](const char* f) {
+        return std::find(available.begin(), available.end(), f) != available.end();
+    };
+    Atoms a(std::vector<std::string>{"Na", "Cl"}, {0, 0, 0, 2.8, 2.8, 2.8},
+            Cell(Mat3::from_rows({5.6, 0, 0}, {0, 5.6, 0}, {0, 0, 5.6}), {true, true, true}));
+    Atoms b = a;
+    b.set_position(1, Vec3{2.7, 2.8, 2.8});
+    const std::vector<Atoms> frames{a, b};
+    if (have("cif")) {
+        const std::string text = write_all(frames, "cif");
+        FA_CHECK(read_all(text, "cif").size() == 2);
+        FA_CHECK(text.find("data_ClNa_1") != std::string::npos);
+        FA_CHECK(text.find("data_ClNa_2") != std::string::npos);
+    }
+    if (have("extxyz")) {
+        FA_CHECK(read_all(write_all(frames, "extxyz"), "extxyz").size() == 2);
+    }
+    if (have("vasp")) {
+        FA_CHECK_THROWS(write_all(frames, "vasp"), FormatError);
+        FA_CHECK(!can_write_frames("vasp"));
+        FA_CHECK(read_all(write_all({a}, "vasp"), "vasp").size() == 1);
+    }
+    FA_CHECK_THROWS(write_all({}, "extxyz"), FormatError);
 }
 
 FA_TEST_MAIN()
