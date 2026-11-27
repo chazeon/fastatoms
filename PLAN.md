@@ -239,6 +239,9 @@ line). Read into `velocities`.
 - The element comes from the `_atom_site_type_symbol`, else from the label.
 - Labels are kept (`Fe1`).
 - Occupancy is kept as `occupancy`.
+- ASE's `info["occupancy"]` (only when the file has an occupancy column: row
+  index as text → {symbol: occupancy} of every row at that position, own first)
+  and the `spacegroup_kinds` int array linking each atom to its row.
 - **Disorder policy option:** `keep_all` (default), `max_occupancy` (one atom
   per site), `error`.
 - The cell uses the same convention as `Cell::from_parameters` (matches ASE).

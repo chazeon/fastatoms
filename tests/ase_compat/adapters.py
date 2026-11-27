@@ -390,7 +390,7 @@ def read_cif(
     ASE's default keeps the majority species on a disordered site, which is
     fastatoms' ``disorder="max_occupancy"``. fastatoms' own default
     (``keep_all``) would include the minority species, so the adapter sets it.
-    ``fractional_occupancies`` has no effect on the atoms, so it is ignored.
+    ``fractional_occupancies=False`` only drops ``info["occupancy"]``, as in ASE.
     """
     CALLS.append("read_cif")
     if store_tags:
@@ -402,7 +402,11 @@ def read_cif(
     if reader != "ase":
         raise _unsupported("CIF reader", "reader", reader)
     frames = _read(fileobj, "cif", index, disorder="max_occupancy")
-    return _convert_frames(frames)
+    converted = _convert_frames(frames)
+    if not fractional_occupancies:
+        for atoms in converted if isinstance(converted, list) else [converted]:
+            atoms.info.pop("occupancy", None)
+    return converted
 
 
 def write_cif(

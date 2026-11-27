@@ -41,6 +41,7 @@ struct Entry {
     double occupancy;
     Vec3 fract;       ///< wrapped into [0, 1)
     double mass;      ///< isotope mass for D and T sites, else 0 (use the element mass)
+    std::int64_t site; ///< row of the asymmetric-unit site it is an image of
 };
 
 /// Gram-Schmidt orthogonalisation of three vectors, as used by LLL.
@@ -349,7 +350,8 @@ gm::GroupOps space_group_ops(const gm::SmallStructure& st) {
 std::vector<Entry> expand_block(const gm::SmallStructure& st, const gm::GroupOps& gops,
                                 const Cell& cell, double tolerance) {
     std::vector<Entry> entries;
-    for (const gm::SmallStructure::Site& site : st.sites) {
+    for (std::size_t row = 0; row < st.sites.size(); ++row) {
+        const gm::SmallStructure::Site& site = st.sites[row];
         const int number = atomic_number(site);
         const double occupancy = site.occ;
         const double mass = isotope_mass(site);
@@ -365,7 +367,7 @@ std::vector<Entry> expand_block(const gm::SmallStructure& st, const gm::GroupOps
                     continue;
                 }
                 seen.add(f);
-                entries.push_back({number, site.label, occupancy, f, mass});
+                entries.push_back({number, site.label, occupancy, f, mass, static_cast<std::int64_t>(row)});
             }
         }
     }
@@ -374,6 +376,8 @@ std::vector<Entry> expand_block(const gm::SmallStructure& st, const gm::GroupOps
 
 /// Apply the disorder policy. MaxOccupancy keeps one entry per position
 /// (positions closer than `tolerance`), the most occupied one, ties to the first.
+/// The kept atom keeps the site row of the first entry there, as ASE's
+/// spacegroup_kinds does.
 std::vector<Entry> apply_disorder(std::vector<Entry> entries, CifDisorder disorder,
                                   const Cell& cell, double tolerance) {
     if (disorder != CifDisorder::MaxOccupancy) {
@@ -388,7 +392,9 @@ std::vector<Entry> apply_disorder(std::vector<Entry> entries, CifDisorder disord
             kept.push_back(std::move(e));
         } else if (e.occupancy > kept[*same].occupancy) {
             index.move(*same, e.fract);
+            const std::int64_t first_site = kept[*same].site;
             kept[*same] = std::move(e);
+            kept[*same].site = first_site;
         }
     }
     return kept;
@@ -399,7 +405,9 @@ Atoms build_atoms(const std::vector<Entry>& entries, const Cell& cell) {
     std::vector<double> positions;
     std::vector<std::string> labels;
     std::vector<double> occupancy;
+    std::vector<std::int64_t> kinds;
     numbers.reserve(entries.size());
+    kinds.reserve(entries.size());
     positions.reserve(3 * entries.size());
     labels.reserve(entries.size());
     occupancy.reserve(entries.size());
@@ -411,6 +419,7 @@ Atoms build_atoms(const std::vector<Entry>& entries, const Cell& cell) {
         positions.push_back(r.z);
         labels.push_back(e.label);
         occupancy.push_back(e.occupancy);
+        kinds.push_back(e.site);
     }
     // Per-atom masses only when some site is an isotope, as ase.io.cif does;
     // the other atoms keep their element masses.
@@ -426,10 +435,49 @@ Atoms build_atoms(const std::vector<Entry>& entries, const Cell& cell) {
     Atoms atoms(std::move(numbers), std::move(positions), cell);
     atoms.set_string_array("labels", labels);
     atoms.set_array("occupancy", occupancy, 1);
+    atoms.set_int_array("spacegroup_kinds", kinds, 1);
     if (isotopes) {
         atoms.set_masses(masses);
     }
     return atoms;
+}
+
+/// ASE's info["occupancy"]: for each asymmetric-unit row (key: the row index
+/// as text), the species of every row at the same position (within
+/// `tolerance`, before symmetry expansion), its own first, then the others
+/// in row order. Atoms find their row through the spacegroup_kinds array.
+Value occupancy_info(const gm::SmallStructure& st, const Cell& cell, double tolerance) {
+    PointIndex index(cell, tolerance);
+    std::vector<std::size_t> group(st.sites.size());
+    std::vector<std::vector<std::size_t>> members;
+    for (std::size_t row = 0; row < st.sites.size(); ++row) {
+        const gm::Fractional& g = st.sites[row].fract;
+        const Vec3 f = wrap_unit(Vec3(g.x, g.y, g.z));
+        const std::optional<std::size_t> same = index.first_within(f);
+        if (same) {
+            group[row] = *same;
+        } else {
+            group[row] = index.add(f);
+            members.emplace_back();
+        }
+        members[group[row]].push_back(row);
+    }
+    Value::Map out;
+    out.reserve(st.sites.size());
+    for (std::size_t row = 0; row < st.sites.size(); ++row) {
+        Value species{Value::Map{}};
+        auto put = [&](std::size_t r) {
+            species[std::string(symbol_from_number(atomic_number(st.sites[r])))] = Value(st.sites[r].occ);
+        };
+        put(row);
+        for (std::size_t other : members[group[row]]) {
+            if (other != row) {
+                put(other);
+            }
+        }
+        out.emplace_back(std::to_string(row), std::move(species));
+    }
+    return Value(std::move(out));
 }
 
 /// Reject atom-site layouts this reader does not handle, with a message that
@@ -555,6 +603,10 @@ std::vector<Atoms> read_cif(std::string_view text, const CifReadOptions& options
                                options.disorder, cell, options.merge_tolerance);
 
             Atoms atoms = build_atoms(entries, cell);
+            // As ASE: only when the file has an occupancy column.
+            if (block.find_values("_atom_site_occupancy")) {
+                atoms.info()["occupancy"] = occupancy_info(st, cell, options.merge_tolerance);
+            }
             if (!st.spacegroup_hm.empty()) {
                 atoms.info()["spacegroup"] = Value(st.spacegroup_hm);
             } else if (!has_symmetry_source(st)) {

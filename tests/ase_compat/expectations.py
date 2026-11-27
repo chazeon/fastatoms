@@ -36,9 +36,9 @@ _LDATA_RW = "ase.test.lammpsdata.test_write_and_read::"
 _LDATA_CONN = "ase.test.lammpsdata.test_read_connectivity::"
 
 _OCC = (
-    "ASE CIF bookkeeping: info['occupancy'] (and spacegroup_kinds) keeps minority "
-    "species on disordered sites. fastatoms stores occupancy as an array and drops "
-    "the minority species, so this test checks ASE internals, not file semantics."
+    "The reader fills info['occupancy'] and spacegroup_kinds as ASE does, but the CIF "
+    "writer does not write a mixed site back from info['occupancy'] (it writes one row "
+    "per atom with its occupancy array, and does not warn on a missing entry). Scope."
 )
 _CIFBLOCK = (
     "ASE CIFBlock tags (store_tags, labels=, loop_keys=) are ASE's CIF object model. "
@@ -61,10 +61,10 @@ READ = ("read", "both")
 WRITE = ("write", "both")
 
 EXPECTATIONS: list[Expectation] = [
+    # -- CIF: mixed sites on write -----------------------------------------------
+    Expectation(_CIF + "test_cif", "xfail", "c", _OCC, modes=WRITE),
+    Expectation(_CIF + "test_bad_occupancies", "xfail", "c", _OCC, modes=WRITE),
     # -- CIF: ASE internals -------------------------------------------------------
-    Expectation(_CIF + "test_cif", "deselect", "d", _OCC),
-    Expectation(_CIF + "test_cif_icsd", "deselect", "d", _OCC),
-    Expectation(_CIF + "test_bad_occupancies", "deselect", "d", _OCC),
     Expectation(_CIF + "test_cif_labels", "deselect", "d", _CIFBLOCK),
     Expectation(_CIF + "test_cif_loop_keys", "deselect", "d", _CIFBLOCK),
     Expectation(_CIF + "test_cif_writer_label_numbers", "deselect", "d", _CIFBLOCK),

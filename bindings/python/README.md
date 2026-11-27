@@ -56,7 +56,9 @@ internals, `tests/`, private helpers) may change at any time.
   `H1`), `symbols`, `numbers`, `positions`, `cell` (rows are lattice vectors),
   `pbc`, `scaled_positions(wrap=False)`, `velocities` (as written, file units),
   `arrays` (`type`, `id`, `image`, `occupancy`, `selective_dynamics`, ... when the
-  file provides them), `info`, `repeat(reps)` (ASE order), `copy()`, `to_ase()`
+  file provides them; CIF adds `spacegroup_kinds`), `info` (always a dict; CIF
+  adds ASE's `occupancy` map when the file has an occupancy column),
+  `repeat(reps)` (ASE order), `copy()`, `to_ase()`
   and `Atoms.from_ase(atoms)`.
 - `fastatoms.neighbor_list(quantities, atoms, cutoff)`: the pair set, `S`, `D` and
   `d` of `ase.neighborlist.neighbor_list`, sorted by `(i, j, S)`.

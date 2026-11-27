@@ -154,6 +154,23 @@ def test_format_options_pass_through_to_the_core() -> None:
     assert list(picked.numbers) == [26, 28]
 
 
+def test_cif_occupancy_info_matches_ase() -> None:
+    # ASE's info["occupancy"] (keyed by asymmetric-unit row) and the
+    # spacegroup_kinds array that points each atom at its row.
+    path = DATA / "cif" / "disorder.cif"
+    ours = fastatoms.io.read(path, disorder="max_occupancy")
+    ref = ase_io.read(path)
+    assert ours.info["occupancy"] == ref.info["occupancy"]
+    for row_ours, row_ref in zip(ours.info["occupancy"].values(), ref.info["occupancy"].values(), strict=True):
+        assert list(row_ours) == list(row_ref)  # own species first, as ASE
+    assert list(ours.arrays["spacegroup_kinds"]) == list(ref.arrays["spacegroup_kinds"])
+    assert ours.to_ase().info["occupancy"] == ref.info["occupancy"]
+    # No occupancy column: no key, as ASE; an empty info is {}.
+    plain = fastatoms.io.read(DATA / "cif" / "rutile.cif")
+    assert "occupancy" not in plain.info
+    assert fastatoms.Atoms().info == {}
+
+
 def test_types_option_passes_through() -> None:
     path = DATA / "lammps" / "unsorted_ids.lammpstrj"
     atoms = fastatoms.io.read(path, format="lammps-dump", types={"1": "Fe", "2": "O"})

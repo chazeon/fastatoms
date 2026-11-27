@@ -179,7 +179,11 @@ void bind_atoms(py::module_& m) {
 
         // Per-frame info (ASE atoms.info). A copy is returned each time.
         .def_property(
-            "info", [](const Atoms& a) { return value_to_py(a.info()); },
+            "info",
+            [](const Atoms& a) -> py::object {
+                // An empty info is {} (as ASE), not None.
+                return a.info().is_null() ? py::dict() : value_to_py(a.info());
+            },
             [](Atoms& a, const py::object& obj) { a.set_info(value_from_py(obj)); })
 
         // Extra arrays. `arrays` is a fresh dict of copies.

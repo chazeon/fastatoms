@@ -222,6 +222,27 @@ FA_TEST(cif_disorder_max_occupancy) {
     FA_CHECK_CLOSE(atoms.array("occupancy").data.at(0), 0.6, 1e-12);
 }
 
+// ASE's info["occupancy"]: per asymmetric-unit row, every species at its
+// position, its own first; atoms point at the first row there through
+// spacegroup_kinds (Ni and Cu tie, so atom 1 keeps row 2 either way).
+FA_TEST(cif_occupancy_info_matches_ase) {
+    CifReadOptions options;
+    options.disorder = CifDisorder::MaxOccupancy;
+    const Atoms atoms = read_cif(read_text("disorder.cif"), options).at(0);
+    FA_CHECK(atoms.int_array("spacegroup_kinds").data == (std::vector<std::int64_t>{0, 2}));
+    const Value& occ = *atoms.info().find("occupancy");
+    FA_CHECK(occ.as_map().size() == 4);
+    const Value::Map& row1 = occ.find("1")->as_map();
+    FA_CHECK(row1.at(0).first == "Co" && row1.at(1).first == "Fe");
+    FA_CHECK_CLOSE(row1.at(0).second.as_double(), 0.4, 1e-12);
+    FA_CHECK_CLOSE(row1.at(1).second.as_double(), 0.6, 1e-12);
+    FA_CHECK(occ.find("2")->find("Cu") != nullptr);
+    // keep_all keeps the same info and gives every atom its own row.
+    const Atoms all = read_cif(read_text("disorder.cif")).at(0);
+    FA_CHECK(all.int_array("spacegroup_kinds").data == (std::vector<std::int64_t>{0, 1, 2, 3}));
+    FA_CHECK(all.info().find("occupancy") != nullptr);
+}
+
 FA_TEST(cif_disorder_error) {
     CifReadOptions options;
     options.disorder = CifDisorder::Error;

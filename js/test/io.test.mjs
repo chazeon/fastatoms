@@ -137,6 +137,23 @@ test("format is guessed from the content when there is no filename", {
   assert.ok(atoms.length > 0);
 });
 
+test("cif: info.occupancy and spacegroup_kinds follow ASE", {
+  skip: !has("cif") || skipUnlessFile(`${REPO_DATA}/cif/disorder.cif`),
+}, () => {
+  const atoms = io.read(readText(`${REPO_DATA}/cif/disorder.cif`), {
+    format: "cif",
+    disorder: "max_occupancy",
+  });
+  assert.deepEqual(atoms.info.occupancy, {
+    0: { Fe: 0.6, Co: 0.4 },
+    1: { Co: 0.4, Fe: 0.6 },
+    2: { Ni: 0.5, Cu: 0.5 },
+    3: { Cu: 0.5, Ni: 0.5 },
+  });
+  assert.deepEqual(Object.keys(atoms.info.occupancy[1]), ["Co", "Fe"]);
+  assert.deepEqual([...atoms.getArray("spacegroup_kinds")], [0, 2]);
+});
+
 test("format is guessed from the filename, else an error names the file", { skip: !has("vasp") }, () => {
   assert.equal(io.read(POSCAR, { filename: "CONTCAR" }).length, 2);
   assert.throws(() => io.read("just some text\n", { filename: "notes.txt" }), /notes\.txt/);

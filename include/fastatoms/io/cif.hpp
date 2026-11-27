@@ -9,6 +9,12 @@
 /// or IT number), merges images closer than `merge_tolerance`, keeps labels
 /// ("labels") and occupancies ("occupancy"), and builds the cell with the same
 /// convention as `Cell::from_parameters` (a along x, b in the xy plane).
+///
+/// As ase.io.cif: the int array "spacegroup_kinds" gives each atom the row of
+/// the asymmetric-unit site it is an image of (under max_occupancy, the first
+/// row at that position). When the block has an `_atom_site_occupancy`
+/// column, info["occupancy"] maps each row ("0", "1", ...) to {symbol:
+/// occupancy} for every row at the same position, its own species first.
 
 #include <string>
 #include <string_view>
